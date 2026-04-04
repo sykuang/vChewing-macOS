@@ -55,6 +55,29 @@ struct MixedInputPrototype {
     if char.isLetter || char.isNumber { return true }
     return continuationScalars.contains(char)
   }
+
+  static func shouldBypass(
+    inputText: String,
+    hasComposition: Bool,
+    isPhoneticKey: Bool,
+    activeSequence: Bool,
+    isMainAreaNumKey: Bool
+  ) -> Bool {
+    if activeSequence {
+      // Once a token-like bypass sequence is active, allow top-row digits to
+      // continue the token instead of bouncing back into phonetic processing.
+      return shouldContinueSequence(inputText: inputText)
+    }
+
+    // Outside an active sequence, keep top-row digits conservative because
+    // they are commonly mapped to bopomofo keys in existing layouts.
+    if isMainAreaNumKey { return false }
+    return shouldStartSequence(
+      inputText: inputText,
+      hasComposition: hasComposition,
+      isPhoneticKey: isPhoneticKey
+    )
+  }
 }
 
 extension InputHandlerProtocol {
@@ -105,18 +128,20 @@ extension InputHandlerProtocol {
       MixedInputPrototypeTracker.deactivate(sessionID: sessionID)
       return false
     }
-    guard !input.isNumericPadKey, !input.isMainAreaNumKey else { return false }
+    guard !input.isNumericPadKey else { return false }
 
     let normalizedText = (input.inputTextIgnoringModifiers ?? input.text)
       .lowercased()
       .applyingTransformFW2HW(reverse: false)
     let isPhoneticKey = composer.inputValidityCheck(charStr: normalizedText)
     let active = MixedInputPrototypeTracker.isActive(sessionID: sessionID)
-    let shouldBypass = MixedInputPrototype.shouldStartSequence(
+    let shouldBypass = MixedInputPrototype.shouldBypass(
       inputText: input.text,
       hasComposition: session.state.hasComposition,
-      isPhoneticKey: isPhoneticKey
-    ) || (active && MixedInputPrototype.shouldContinueSequence(inputText: input.text))
+      isPhoneticKey: isPhoneticKey,
+      activeSequence: active,
+      isMainAreaNumKey: input.isMainAreaNumKey
+    )
 
     guard shouldBypass else {
       MixedInputPrototypeTracker.deactivate(sessionID: sessionID)

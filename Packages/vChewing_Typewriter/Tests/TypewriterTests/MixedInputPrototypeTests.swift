@@ -26,3 +26,20 @@ import Testing
   #expect(MixedInputPrototype.shouldContinueSequence(inputText: "-"))
   #expect(!MixedInputPrototype.shouldContinueSequence(inputText: " "))
 }
+
+@Test func mixedInputPrototypeAllowsTopRowDigitsOnlyAfterSequenceStarts() {
+  #expect(!MixedInputPrototype.shouldBypass(
+    inputText: "7",
+    hasComposition: false,
+    isPhoneticKey: false,
+    activeSequence: false,
+    isMainAreaNumKey: true
+  ))
+  #expect(MixedInputPrototype.shouldBypass(
+    inputText: "7",
+    hasComposition: false,
+    isPhoneticKey: false,
+    activeSequence: true,
+    isMainAreaNumKey: true
+  ))
+}
