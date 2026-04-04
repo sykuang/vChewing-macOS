@@ -147,6 +147,11 @@ extension InputHandlerProtocol {
         return revolveTypingMethod(to: .haninKeyboardSymbol)
       }
 
+      // Experimental mixed-input prototype.
+      // Keep this before phonetic composition so obvious inline ASCII tokens
+      // can bypass into direct commit without forcing explicit ASCII mode.
+      if handleMixedInputPrototype(input: input) { return true }
+
       // 注音/磁帶按鍵輸入與漢音鍵盤符號輸入處理。
       if let compositionHandled = handleComposition(input: input) {
         return compositionHandled
