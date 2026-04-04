@@ -13,6 +13,37 @@ Provide a layout-aware, phonetic-validity-first decision core for Zhuyin mixed i
 This avoids the major failure mode discovered during earlier prototype patches:
 stealing keys that are legitimate bopomofo keys in the current layout.
 
+## Layering
+
+### 1. Core decision engine
+Implemented in:
+- `MixedInputCoreDecider.swift`
+
+Responsibilities:
+- phonetic-validity-first routing
+- token-state transitions
+- generic decision output
+
+This layer should stay small, deterministic, and minimally opinionated.
+
+### 2. Heuristic overrides / token-shape rules
+Implemented in:
+- `MixedInputHeuristics.swift`
+
+Responsibilities:
+- high-signal token starts (`@`, `/`, `~`, `:` ...)
+- conservative continuation rules for email/path/url/numeric tokens
+- layout-sensitive exceptions such as top-row digit suppression
+
+Heuristics are treated as **supplements**, not the main algorithm.
+
+### 3. Facade
+Implemented in:
+- `MixedInputDecider.swift`
+
+Responsibilities:
+- wire core engine + heuristics together behind one public entry point
+
 ## Decision layers
 
 ### 1. Phonetic validity gate
