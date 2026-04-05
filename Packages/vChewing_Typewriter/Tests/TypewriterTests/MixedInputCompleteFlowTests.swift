@@ -1,6 +1,7 @@
 import Foundation
 import Shared
 import Testing
+@testable import Tekkon
 @testable import Typewriter
 
 extension InputHandlerTests {
@@ -38,10 +39,20 @@ extension InputHandlerTests {
 
     let expected = "你好 test@example.com 謝謝"
 
+    let zhuyinFixtures = LegalMixedInputFixtures.zhuyinStandard
+    #expect(zhuyinFixtures.count >= 3)
+
+    // Validate fixture legality up-front so this aspiration spec never drifts
+    // onto fake or malformed test data.
+    for fixture in zhuyinFixtures {
+      var composer = Tekkon.Composer(arrange: fixture.parser)
+      #expect(composer.receiveSequence(fixture.typing) == fixture.expectedPhonabet)
+    }
+
     // Placeholder sequence for future implementation work.
-    // When the mixed-input algorithm matures, replace this with a precise key
-    // stream that reflects real layout-aware Zhuyin input plus inline English.
-    let aspirationalKeyStream = "su3cl3 test@example.com xie4xie4"
+    // This is now assembled from validated legal syllable fixtures plus an
+    // inline English token.
+    let aspirationalKeyStream = zhuyinFixtures[0].typing + zhuyinFixtures[1].typing + " test@example.com " + zhuyinFixtures[2].typing + zhuyinFixtures[2].typing
 
     typeSentence(aspirationalKeyStream)
     _ = testHandler.triageInput(event: KBEvent.KeyEventData.dataEnterReturn.asEvent)
@@ -71,8 +82,19 @@ extension InputHandlerTests {
     // remain inline without ASCII mode switching.
     let expected = "你好 macOS14 謝謝"
 
-    // Placeholder for future layout-accurate pinyin key stream.
-    let aspirationalKeyStream = "ni3hao3 macOS14 xie4xie4"
+    let pinyinFixtures = LegalMixedInputFixtures.hanyuPinyin
+    #expect(pinyinFixtures.count >= 3)
+
+    // Validate fixture legality up-front so this aspiration spec uses real,
+    // parser-accepted pinyin syllables.
+    for fixture in pinyinFixtures {
+      var composer = Tekkon.Composer(arrange: fixture.parser)
+      #expect(composer.receiveSequence(fixture.typing) == fixture.expectedPhonabet)
+    }
+
+    // Placeholder for future layout-accurate pinyin key stream, assembled from
+    // validated fixtures.
+    let aspirationalKeyStream = pinyinFixtures[0].typing + pinyinFixtures[1].typing + " macOS14 " + pinyinFixtures[2].typing + pinyinFixtures[2].typing
 
     typeSentence(aspirationalKeyStream)
     _ = testHandler.triageInput(event: KBEvent.KeyEventData.dataEnterReturn.asEvent)
