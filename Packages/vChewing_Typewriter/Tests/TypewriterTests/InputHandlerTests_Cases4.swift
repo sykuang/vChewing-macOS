@@ -113,19 +113,15 @@ extension InputHandlerTests {
     #expect(testHandler.mixedAlphanumericalBuffer.isEmpty)
   }
 
-  /// 中英連打時，若組字區已有中文，
-  /// 應可依觸發鍵（Enter / Space）一次提交「中文 + ASCII」。
-  @Test(arguments: [
-    (id: "IH404A", typing: "code", triggerEnter: true, expectedBuffer: "code", expectedCommission: "咱地code"),
-    (id: "IH404B", typing: "aq ", triggerEnter: false, expectedBuffer: "", expectedCommission: "咱地aq "),
-  ])
-  func test_IH404_MixedCommitChinesePlusASCIIByEnterOrSpace(
-    _ scenario: (id: String, typing: String, triggerEnter: Bool, expectedBuffer: String, expectedCommission: String)
-  ) throws {
+  /// 已有中文節點後，繼續輸入可同時拼成注音的英文字母時，仍先保留 raw buffer；
+  /// 不可走 legacy 純注音 continuation path，也不可把 composer reading 疊進 inline。
+  @Test
+  func test_IH404_ExistingChineseThenPrintableKeysStayRawUntilExplicitFinalize() throws {
     let (testHandler, testSession) = try prepareMixedModeHandler()
     let testKanjiData = """
     ㄗㄚˊ 咱 -1
     ㄉㄜ˙ 地 -1
+    ㄍㄟˇ 給 -1
     """
     let cleanup = injectTemporaryGrams(testHandler, testKanjiData)
     defer { cleanup(); testHandler.clear() }
@@ -134,22 +130,132 @@ extension InputHandlerTests {
     #expect(throws: Never.self) { try testHandler.assembler.insertKey("ㄉㄜ˙") }
     testSession.switchState(testHandler.generateStateOfInputting())
 
-    typeSentence(scenario.typing)
-    #expect(testHandler.mixedAlphanumericalBuffer == scenario.expectedBuffer, "\(scenario.id) buffer mismatch")
+    typeSentence("code")
 
-    if scenario.triggerEnter {
-      #expect(testHandler.triageInput(event: KBEvent.KeyEventData.dataEnterReturn.asEvent))
-    }
+    #expect(testSession.recentCommissions.isEmpty)
+    #expect(testHandler.mixedAlphanumericalBuffer == "code")
+    #expect(testHandler.generateStateOfInputting().displayedText == "咱地code")
 
-    #expect(testSession.recentCommissions.joined() == scenario.expectedCommission)
+    #expect(testHandler.triageInput(event: KBEvent.KeyEventData.dataEnterReturn.asEvent))
+    #expect(testSession.recentCommissions.joined() == "咱地code")
     #expect(testHandler.mixedAlphanumericalBuffer.isEmpty)
   }
 
-  /// 英文前綴 + 注音後綴應可自動切分，
-  /// 在後綴成為合法可提交注音時先提交英文前綴，並保留中文於組字區。
+  /// 中英混打時，藍色 inline 應顯示 raw buffer 狀態，
+  /// 黑色 tooltip 才顯示目前 Trie/composer 走到的注音。
+  @Test
+  func test_IH405B_MixedTooltipShowsActiveTriePhonabetOnly() throws {
+    let (testHandler, testSession) = try prepareMixedModeHandler()
+    defer { testHandler.clear() }
+
+    typeSentence("f")
+
+    #expect(testHandler.mixedAlphanumericalBuffer == "f")
+    #expect(testSession.state.displayedText == "f")
+    #expect(testSession.state.tooltip == "ㄑ")
+
+    typeSentence("u")
+
+    #expect(testHandler.mixedAlphanumericalBuffer == "fu")
+    #expect(testSession.state.displayedText == "fu")
+    #expect(testSession.state.tooltip == "ㄑㄧ")
+  }
+
+  /// 中英混打時，藍色 inline 應保留使用者實際輸入的 raw case，
+  /// 黑色 tooltip 則用 lowercased key tail 走 Trie/composer 顯示注音。
+  @Test
+  func test_IH405C_MixedTooltipNormalizesUppercaseKeysForPhonabetPreview() throws {
+    let (testHandler, testSession) = try prepareMixedModeHandler()
+    defer { testHandler.clear() }
+
+    typeSentence("SU")
+
+    #expect(testHandler.mixedAlphanumericalBuffer == "SU")
+    #expect(testSession.state.displayedText == "SU")
+    #expect(testSession.state.tooltip == "ㄋㄧ")
+  }
+
+  /// Mixed alnum tail ending in a two-key syllable must not peel a tiny terminal suffix.
+  /// `su2k7` should stay raw instead of peeling `k7` into LM candidate `爹`.
+  @Test
+  func test_IH405D_MixedAlnumTailDoesNotPeelTinyK7Suffix() throws {
+    let (testHandler, testSession) = try prepareMixedModeHandler()
+    let cleanup = injectTemporaryGrams(testHandler, "ㄜ˙ 爹 -1")
+    defer { cleanup(); testHandler.clear() }
+
+    typeSentence("su2k7")
+
+    #expect(testSession.recentCommissions.isEmpty)
+    #expect(testHandler.mixedAlphanumericalBuffer == "su2k7")
+    #expect(testHandler.committableDisplayText(sansReading: true) == "su2k7")
+  }
+
+  /// 英文 prefix 後已有中文節點時，active Trie tail 只應出現在 tooltip；
+  /// 藍色 inline 不得再把 composer reading 疊進來形成 `ek整ㄍㄜ` 這類混合怪。
+  @Test
+  func test_IH405E_MixedInlineCompositionDoesNotDuplicateActiveTrieTailReading() throws {
+    let (testHandler, testSession) = try prepareMixedModeHandler()
+    let testKanjiData = """
+    ㄍㄜˇ 整 -1
+    ㄍㄜ 歌 -1
+    """
+    let cleanup = injectTemporaryGrams(testHandler, testKanjiData)
+    defer { cleanup(); testHandler.clear() }
+
+    typeSentence("ek3")
+
+    #expect(testSession.recentCommissions.isEmpty)
+    #expect(testHandler.mixedAlphanumericalBuffer.isEmpty)
+    #expect(testHandler.generateStateOfInputting().displayedText == "整")
+
+    testHandler.clear()
+    var stream = MixedInputSegmentStream(parser: testHandler.composer.parser)
+    _ = stream.appendRawKey("e")
+    _ = stream.appendRawKey("k")
+    stream.appendChinese(text: "整", readings: ["ㄍㄜˇ"])
+    testHandler.mixedInputSegmentStream = stream
+    testHandler.mixedInputRawBuffer.clear()
+    testHandler.mixedAlphanumericalBuffer = "ek"
+    testSession.switchState(testHandler.generateStateOfInputting())
+
+    #expect(testSession.recentCommissions.isEmpty)
+    #expect(testHandler.mixedAlphanumericalBuffer == "ek")
+    #expect(testSession.state.displayedText == "ek整")
+    #expect(testSession.state.tooltip == "ㄍㄜ")
+  }
+
+  /// 純注音連打不能被 mixed inline-prefix continuation path 污染成 raw+中文。
+  /// 完成第一個音節後，後續音節應留在一般注音組字路徑，不應把 raw key 留成 inline ASCII prefix。
+  @Test
+  func test_IH405F_PurePhoneticContinuationDoesNotKeepRawPrefix() throws {
+    let (testHandler, testSession) = try prepareMixedModeHandler()
+    let testKanjiData = """
+    ㄋㄧˇ 你 -1
+    ㄏㄠˇ 好 -1
+    ㄋㄧˇ-ㄏㄠˇ 你好 -2
+    """
+    let cleanup = injectTemporaryGrams(testHandler, testKanjiData)
+    defer { cleanup(); testHandler.clear() }
+
+    typeSentence("su3")
+
+    #expect(testSession.recentCommissions.isEmpty)
+    #expect(testHandler.mixedAlphanumericalBuffer.isEmpty)
+    #expect(testHandler.generateStateOfInputting().displayedText == "你")
+
+    typeSentence("cl3")
+
+    #expect(testSession.recentCommissions.isEmpty)
+    #expect(testHandler.mixedAlphanumericalBuffer.isEmpty)
+    #expect(testHandler.generateStateOfInputting().displayedText == "你好")
+    #expect(testHandler.committableDisplayText(sansReading: true) == "你好")
+  }
+
+  /// 英文前綴 + 注音後綴應透過 Trie/parser 檢查 terminal tail；
+  /// 若 suffix 可拼成注音且 LM 有詞，才透過 terminal suffix commit 轉中文。
   /// 參數化覆蓋大小寫 ASCII 前綴（`Hellosu3` / `hellosu3`）。
   @Test(arguments: ["Hellosu3", "hellosu3"])
-  func test_IH405_MixedAutoSplitASCIIAndPhoneticSuffix(_ mixedPrefixInput: String) throws {
+  func test_IH405_MixedTerminalSuffixASCIIAndPhoneticSuffix(_ mixedPrefixInput: String) throws {
     let (testHandler, testSession) = try prepareMixedModeHandler()
     let testKanjiData = """
     ㄋㄧˇ-ㄏㄠˇ 你好 -2
@@ -167,20 +273,22 @@ extension InputHandlerTests {
 
     typeSentence(mixedPrefixInput)
 
-    #expect(testSession.recentCommissions.joined() == expectedASCIIPrefix)
-    #expect(testHandler.committableDisplayText(sansReading: true) == "你")
-    #expect(testHandler.mixedAlphanumericalBuffer.isEmpty)
+    #expect(testSession.recentCommissions.isEmpty)
+    #expect(testHandler.committableDisplayText(sansReading: true) == expectedASCIIPrefix + "你")
+    #expect(testHandler.generateStateOfInputting().displayedText == expectedASCIIPrefix + "你")
+    #expect(testHandler.mixedAlphanumericalBuffer == expectedASCIIPrefix)
 
     typeSentence("cl3")
 
-    let composedChinese = testHandler.committableDisplayText(sansReading: true)
-    #expect(!composedChinese.isEmpty)
-    #expect(composedChinese == "你好")
-    #expect(testSession.recentCommissions.joined() == expectedASCIIPrefix)
-    #expect(testHandler.mixedAlphanumericalBuffer.isEmpty)
+    let composedText = testHandler.committableDisplayText(sansReading: true)
+    #expect(!composedText.isEmpty)
+    #expect(composedText == expectedASCIIPrefix + "你好")
+    #expect(testHandler.generateStateOfInputting().displayedText == expectedASCIIPrefix + "你好")
+    #expect(testSession.recentCommissions.isEmpty)
+    #expect(testHandler.mixedAlphanumericalBuffer == expectedASCIIPrefix)
 
     #expect(testHandler.triageInput(event: KBEvent.KeyEventData.dataEnterReturn.asEvent))
-    #expect(testSession.recentCommissions.joined() == expectedASCIIPrefix + composedChinese)
+    #expect(testSession.recentCommissions.joined() == expectedASCIIPrefix + "你好")
   }
 
   /// 純注音雙音節在 mixed mode 下用 Space 確認後，
@@ -200,9 +308,39 @@ extension InputHandlerTests {
     #expect(testHandler.mixedAlphanumericalBuffer.isEmpty)
   }
 
-  // MARK: Group C1 — Auto-Split with Prior Chinese
+  /// 已有中文組字後，後續 printable keys（即使同時是合法注音鍵）也必須先進 mixed raw buffer，
+  /// 由 Trie validator 延後消歧；不可因為 assembler/composer 非空而走 legacy 純注音 continuation path。
+  @Test
+  func test_IH406A_MixedCanKeepASCIIAfterChineseComposition() throws {
+    let (testHandler, testSession) = try prepareMixedModeHandler()
+    defer { testHandler.clear() }
 
-  private struct AutoSplitWithPriorChineseScenario: Sendable {
+    let testKanjiData = """
+    ㄋㄧˇ 你 -1
+    ㄏㄠˇ 好 -1
+    ㄋㄧˇ-ㄏㄠˇ 你好 -2
+    """
+    let cleanup = injectTemporaryGrams(testHandler, testKanjiData)
+    defer { cleanup() }
+
+    typeSentence("su3cl3test")
+
+    #expect(testSession.recentCommissions.isEmpty)
+    #expect(testHandler.mixedAlphanumericalBuffer == "test")
+    #expect(testHandler.committableDisplayText(sansReading: true) == "你好test")
+    #expect(testHandler.generateStateOfInputting().displayedText == "你好test")
+
+    typeSentence("su3cl3")
+
+    #expect(testSession.recentCommissions.isEmpty)
+    #expect(testHandler.mixedAlphanumericalBuffer == "test")
+    #expect(testHandler.committableDisplayText(sansReading: true) == "你好test你好")
+    #expect(testHandler.generateStateOfInputting().displayedText == "你好test你好")
+  }
+
+  // MARK: Group C1 — Terminal Suffix with Prior Chinese
+
+  private struct TerminalSuffixWithPriorChineseScenario: Sendable {
     let id: String
     let mixedInput: String
     let expectedCommissions: [String]
@@ -212,18 +350,18 @@ extension InputHandlerTests {
   }
 
   @Test(arguments: [
-    AutoSplitWithPriorChineseScenario(
+    TerminalSuffixWithPriorChineseScenario(
       id: "IH407A", mixedInput: "xu.6u4Hellod93",
-      expectedCommissions: ["留意", "Hello"], expectedComposedText: "凱",
-      followUpInput: "ek ", expectedComposedTextAfterFollowUp: "凱歌"
+      expectedCommissions: [], expectedComposedText: "留意Hello凱",
+      followUpInput: nil, expectedComposedTextAfterFollowUp: nil
     ),
-    AutoSplitWithPriorChineseScenario(
+    TerminalSuffixWithPriorChineseScenario(
       id: "IH407B", mixedInput: "xu.6u4Thisd93",
-      expectedCommissions: ["留意", "This"], expectedComposedText: "凱",
+      expectedCommissions: [], expectedComposedText: "留意This凱",
       followUpInput: nil, expectedComposedTextAfterFollowUp: nil
     ),
   ])
-  private func test_IH407_AutoSplitWithPriorChinese(_ s: AutoSplitWithPriorChineseScenario) throws {
+  private func test_IH407_TerminalSuffixWithPriorChinese(_ s: TerminalSuffixWithPriorChineseScenario) throws {
     let (testHandler, testSession) = try prepareMixedModeHandler()
     let testKanjiData = s.followUpInput != nil
       ? """
@@ -247,7 +385,7 @@ extension InputHandlerTests {
 
     #expect(testSession.recentCommissions == s.expectedCommissions, "\(s.id) commissions")
     #expect(testHandler.committableDisplayText(sansReading: true) == s.expectedComposedText, "\(s.id) composed")
-    #expect(testHandler.mixedAlphanumericalBuffer.isEmpty)
+    #expect(!testHandler.mixedAlphanumericalBuffer.isEmpty)
 
     if let followUp = s.followUpInput, let expectedAfter = s.expectedComposedTextAfterFollowUp {
       typeSentence(followUp)
@@ -256,11 +394,11 @@ extension InputHandlerTests {
         testHandler.committableDisplayText(sansReading: true) == expectedAfter,
         "\(s.id) composed after follow-up"
       )
-      #expect(testHandler.mixedAlphanumericalBuffer.isEmpty)
+      #expect(!testHandler.mixedAlphanumericalBuffer.isEmpty)
     }
   }
 
-  // MARK: Group C2 — Auto-Split Boundary Cases
+  // MARK: Group C2 — Terminal Suffix Boundary Cases
 
   private struct GramSpec: Sendable {
     let rawSequence: String
@@ -268,7 +406,7 @@ extension InputHandlerTests {
     let score: Double
   }
 
-  private struct AutoSplitBoundaryScenario: Sendable {
+  private struct TerminalSuffixBoundaryScenario: Sendable {
     let id: String
     let input: String
     let expectedCommissions: [String]
@@ -278,44 +416,54 @@ extension InputHandlerTests {
   }
 
   @Test(arguments: [
-    AutoSplitBoundaryScenario(
+    TerminalSuffixBoundaryScenario(
       id: "IH408A", input: "Twinsu.4",
-      expectedCommissions: ["Twins"], expectedComposedText: "又",
-      expectedDisplayMustNotContain: .none,
+      expectedCommissions: [], expectedComposedText: "Twin拗",
+      expectedDisplayMustNotContain: "又",
       gramSpecs: [
         GramSpec(rawSequence: "u.4", value: "又", score: 999),
         GramSpec(rawSequence: "su.4", value: "拗", score: 100),
       ]
     ),
-    AutoSplitBoundaryScenario(
+    TerminalSuffixBoundaryScenario(
       id: "IH408B", input: "This5jp3",
-      expectedCommissions: ["This"], expectedComposedText: "準",
+      expectedCommissions: [], expectedComposedText: "This準",
       expectedDisplayMustNotContain: .none,
       gramSpecs: [
         GramSpec(rawSequence: "5jp3", value: "準", score: 100),
         GramSpec(rawSequence: "jp3", value: "穩", score: 999),
       ]
     ),
-    AutoSplitBoundaryScenario(
+    TerminalSuffixBoundaryScenario(
       id: "IH408C", input: "thisgjo6",
-      expectedCommissions: ["this"], expectedComposedText: "誰",
+      expectedCommissions: [], expectedComposedText: "this誰",
       expectedDisplayMustNotContain: .none,
       gramSpecs: [
         GramSpec(rawSequence: "gjo6", value: "誰", score: -2),
         GramSpec(rawSequence: "jo6", value: "為", score: -2),
       ]
     ),
-    AutoSplitBoundaryScenario(
+    TerminalSuffixBoundaryScenario(
       id: "IH408D", input: "?c96",
-      expectedCommissions: [], expectedComposedText: "?還",
+      expectedCommissions: [], expectedComposedText: "？還",
       expectedDisplayMustNotContain: "癌",
       gramSpecs: [
         GramSpec(rawSequence: "c96", value: "還", score: 100),
         GramSpec(rawSequence: "96", value: "癌", score: -1),
       ]
     ),
+    TerminalSuffixBoundaryScenario(
+      id: "IH408E", input: "testsu3cl3",
+      expectedCommissions: [], expectedComposedText: "test你好",
+      expectedDisplayMustNotContain: .none,
+      gramSpecs: [
+        GramSpec(rawSequence: "su3", value: "你", score: -1),
+        GramSpec(rawSequence: "cl3", value: "好", score: -1),
+        GramSpec(rawSequence: "su3cl3", value: "你好", score: -2),
+      ]
+    ),
   ])
-  private func test_IH408_MixedAutoSplitBoundaryCases(_ s: AutoSplitBoundaryScenario) throws {
+  private func test_IH408_MixedTerminalSuffixBoundaryCases(_ s: TerminalSuffixBoundaryScenario) throws {
     let (testHandler, testSession) = try prepareMixedModeHandler()
     for spec in s.gramSpecs {
       guard let gram = makeTemporaryGram(
@@ -335,16 +483,38 @@ extension InputHandlerTests {
 
     #expect(testSession.recentCommissions == s.expectedCommissions, "\(s.id) commissions")
     let currentDisplay = testHandler.committableDisplayText(sansReading: true)
-    #expect([s.expectedComposedText, "？還"].contains(currentDisplay), "\(s.id) composed: got \(currentDisplay)")
+    #expect(currentDisplay == s.expectedComposedText, "\(s.id) composed: got \(currentDisplay)")
     if let mustNotContain = s.expectedDisplayMustNotContain {
       #expect(!currentDisplay.contains(mustNotContain), "\(s.id) should not contain \(mustNotContain)")
     }
+    switch s.id {
+    case "IH408D":
+      #expect(testHandler.mixedAlphanumericalBuffer.isEmpty)
+    default:
+      #expect(!testHandler.mixedAlphanumericalBuffer.isEmpty)
+    }
+  }
+
+  /// Trie validator must reject short English-looking tails such as `discordu6`.
+  @Test
+  func test_IH408F_MixedTrieValidatorKeepsInvalidEnglishTailRaw() throws {
+    let (testHandler, testSession) = try prepareMixedModeHandler()
+    defer { testHandler.clear() }
+
+    typeSentence("discordu6")
+
+    #expect(testSession.recentCommissions.isEmpty)
+    #expect(testHandler.mixedAlphanumericalBuffer == "discordu6")
+    #expect(testHandler.committableDisplayText(sansReading: true) == "discordu6")
+
+    #expect(testHandler.triageInput(event: KBEvent.KeyEventData.dataEnterReturn.asEvent))
+    #expect(testSession.recentCommissions.joined() == "discordu6")
     #expect(testHandler.mixedAlphanumericalBuffer.isEmpty)
   }
 
-  // MARK: Group B1 — Space Finalize: Auto-Split with Chinese Suffix
+  // MARK: Group B1 — Space Finalize: Terminal Suffix with Chinese Suffix
 
-  private struct SpaceFinalizeAutoSplitScenario: Sendable {
+  private struct SpaceFinalizeTerminalSuffixScenario: Sendable {
     let id: String
     let input: String
     let expectedCommissions: [String]
@@ -352,16 +522,16 @@ extension InputHandlerTests {
   }
 
   @Test(arguments: [
-    SpaceFinalizeAutoSplitScenario(
+    SpaceFinalizeTerminalSuffixScenario(
       id: "IH409A", input: "This5j; ",
       expectedCommissions: ["This"], expectedComposedText: "裝"
     ),
-    SpaceFinalizeAutoSplitScenario(
+    SpaceFinalizeTerminalSuffixScenario(
       id: "IH409B", input: "this5j; ",
       expectedCommissions: ["this"], expectedComposedText: "裝"
     ),
   ])
-  private func test_IH409_MixedSpaceFinalizeAutoSplit(_ s: SpaceFinalizeAutoSplitScenario) throws {
+  private func test_IH409_MixedSpaceFinalizeTerminalSuffix(_ s: SpaceFinalizeTerminalSuffixScenario) throws {
     let (testHandler, testSession) = try prepareMixedModeHandler()
     guard let gram = makeTemporaryGram(rawSequence: "5j; ", value: "裝", score: 999, using: testHandler) else {
       Issue.record("Failed to create gram for 5j; ")
@@ -417,8 +587,8 @@ extension InputHandlerTests {
 
     typeSentence("3su")
 
-    #expect(testHandler.committableDisplayText(sansReading: true) == "你")
-    #expect(testHandler.mixedAlphanumericalBuffer.isEmpty)
+    #expect(testHandler.committableDisplayText(sansReading: true) == "3su")
+    #expect(testHandler.mixedInputSegmentStream.displayText == "3su")
 
     // 案例 B：acceptLeadingIntonations = false，3su 不得觸發注音路徑，應留在 ASCII buffer
     testHandler.clear()
@@ -429,7 +599,7 @@ extension InputHandlerTests {
     typeSentence("3su")
 
     #expect(testHandler.mixedAlphanumericalBuffer == "3su")
-    #expect(testHandler.committableDisplayText(sansReading: true).isEmpty)
+    #expect(testHandler.committableDisplayText(sansReading: true) == "3su")
 
     // Enter 後應提交原始 ASCII
     _ = testHandler.triageInput(event: KBEvent.KeyEventData.dataEnterReturn.asEvent)
@@ -559,10 +729,10 @@ extension InputHandlerTests {
     #expect(testSession.recentCommissions.joined() == "1！")
   }
 
-  /// `=` 存在於 ASCII 前綴時，auto-split 仍可在後綴合法注音處觸發。
-  /// 現行行為會剔除該符號，故先以測試鎖住目前結果。
+  /// `=` 存在於 ASCII 前綴後，後續合法注音 suffix 仍應可走 terminal suffix commit。
+  /// 鎖住目前符號與 suffix 互動結果，避免 raw buffer / punctuation 邊界回歸。
   @Test
-  func test_IH416_MixedAutoSplitKeepsASCIIWithEqualsPrefix() throws {
+  func test_IH416_MixedTerminalSuffixKeepsASCIIWithEqualsPrefix() throws {
     guard let testHandler, let testSession else {
       Issue.record("testHandler and testSession at least one of them is nil.")
       return

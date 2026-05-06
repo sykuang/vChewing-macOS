@@ -45,7 +45,15 @@ extension InputHandlerProtocol {
     let cursorSansReading = cursor
     // 先提出來讀音資料，減輕運算負擔。
     let noReading = sansReading || [.codePoint, .romanNumerals].contains(currentTypingMethod)
-    let reading: String = noReading ? "" : readingForDisplay
+    let mixedRawPrefix = mixedInputSegmentStream.isEmpty && prefs.mixedAlphanumericalEnabled
+      && currentTypingMethod == .vChewingFactory
+      ? mixedAlphanumericalBuffer
+      : ""
+    let reading: String = noReading
+      ? ""
+      : mixedRawPrefix.isEmpty
+        ? readingForDisplay
+        : ""
     if !reading.isEmpty {
       var newDisplayTextSegments = [String]()
       var temporaryNode = ""
@@ -84,11 +92,31 @@ extension InputHandlerProtocol {
     for i in 0 ..< displayTextSegments.count {
       displayTextSegments[i] = displayTextSegments[i].trimmingCharacters(in: .newlines)
     }
+    if !mixedRawPrefix.isEmpty {
+      displayTextSegments.append(mixedRawPrefix)
+      rawSegments?.append(mixedRawPrefix)
+    }
     if var raw = rawSegments {
       for i in 0 ..< raw.count {
         raw[i] = raw[i].trimmingCharacters(in: .newlines)
       }
       rawSegments = raw
+    }
+    if !mixedInputSegmentStream.isEmpty,
+       prefs.mixedAlphanumericalEnabled,
+       currentTypingMethod == .vChewingFactory {
+      var result = State.ofInputting(
+        displayTextSegments: mixedInputSegmentStream.displayTextSegments,
+        cursor: mixedInputSegmentStream.displayText.count,
+        highlightAt: nil
+      )
+      result.marker = mixedInputSegmentStream.displayText.count
+      result.data.rawDisplayTextSegments = mixedInputSegmentStream.displayTextSegments
+      if let activeTrieSuffix = mixedInputSegmentStream.activeRawBuffer.activeTriePrefix {
+        result.tooltip = activeTrieSuffix.phonabet
+        result.tooltipDuration = 0
+      }
+      return result
     }
     /// 這裡生成準備要拿來回呼的「正在輸入」狀態。
     var result = State.ofInputting(
@@ -103,9 +131,11 @@ extension InputHandlerProtocol {
       result.cursor = 0
       result.marker = 0
     }
-    /// 中英混打模式：以 Tooltip 顯示目前 ASCII buffer 的原始內容，方便使用者識別輸入狀態。
-    if prefs.mixedAlphanumericalEnabled, !mixedAlphanumericalBuffer.isEmpty {
-      result.tooltip = mixedAlphanumericalBuffer
+    /// 中英混打模式：藍色 inline 組字區顯示 raw buffer 狀態；
+    /// 黑色 tooltip 顯示目前 Trie 正在走到的注音顯示值。
+    if prefs.mixedAlphanumericalEnabled, !mixedAlphanumericalBuffer.isEmpty,
+       let activeTrieSuffix = mixedInputRawBuffer.activeTriePrefix {
+      result.tooltip = activeTrieSuffix.phonabet
       result.tooltipDuration = 0 // 設為 0 使 Tooltip 恆久顯示，直到混打模式結束。
     }
     return result
@@ -162,7 +192,29 @@ extension InputHandlerProtocol {
   }
 
   /// 組字區可以投影成 BPMFVS 顯示，但一般遞交流程只能吃原始內容。
-  public func committableDisplayText(sansReading: Bool = false) -> String {
+  public func committableDisplayText(
+    sansReading: Bool = false,
+    includeMixedAlphanumericalPrefix: Bool = true
+  ) -> String {
+    if sansReading,
+       includeMixedAlphanumericalPrefix,
+       !mixedInputSegmentStream.isEmpty,
+       prefs.mixedAlphanumericalEnabled,
+       currentTypingMethod == .vChewingFactory {
+      return mixedInputSegmentStream.displayText
+    }
+    if sansReading,
+       !includeMixedAlphanumericalPrefix,
+       !mixedInputSegmentStream.isEmpty,
+       mixedInputSegmentStream.activeRawText == mixedAlphanumericalBuffer,
+       prefs.mixedAlphanumericalEnabled,
+       currentTypingMethod == .vChewingFactory {
+      let activeTail = mixedInputSegmentStream.activeRawText
+      guard !activeTail.isEmpty,
+            mixedInputSegmentStream.displayText.hasSuffix(activeTail)
+      else { return mixedInputSegmentStream.displayText }
+      return String(mixedInputSegmentStream.displayText.dropLast(activeTail.count))
+    }
     let handleAsCodePointInput = currentTypingMethod == .codePoint && !sansReading
     let handleAsRomanNumeralInput = currentTypingMethod == .romanNumerals && !sansReading
     var displayTextSegments: [String] = handleAsCodePointInput || handleAsRomanNumeralInput
@@ -170,13 +222,21 @@ extension InputHandlerProtocol {
       : compositionBufferDisplayTextSegments(reflectBPMFVS: false)
     displayTextSegments = displayTextSegments.map { $0.trimmingCharacters(in: .newlines) }
     var displayedText = displayTextSegments.joined()
+    let mixedPrefix = mixedInputSegmentStream.isEmpty && includeMixedAlphanumericalPrefix && currentTypingMethod == .vChewingFactory
+      ? mixedAlphanumericalBuffer
+      : ""
+    if sansReading, !mixedPrefix.isEmpty {
+      return displayedText + mixedPrefix
+    }
     let noReading = sansReading || [.codePoint, .romanNumerals].contains(currentTypingMethod)
     let reading: String = noReading ? "" : readingForDisplay
-    guard !reading.isEmpty else { return displayedText }
+    if reading.isEmpty {
+      return displayedText + mixedPrefix
+    }
     let cursor = max(min(convertCursorForDisplay(assembler.cursor), displayedText.count), 0)
     let insertionIndex = displayedText.index(displayedText.startIndex, offsetBy: cursor)
     displayedText.insert(contentsOf: reading, at: insertionIndex)
-    return displayedText
+    return displayedText + mixedPrefix
   }
 
   /// 生成「在有單獨的前置聲調符號輸入時」的工具提示。
@@ -491,13 +551,27 @@ extension InputHandlerProtocol {
 
     guard state.type == .ofInputting else { return false }
 
-    if prefs.mixedAlphanumericalEnabled, !mixedAlphanumericalBuffer.isEmpty {
+    if prefs.mixedAlphanumericalEnabled,
+       currentTypingMethod == .vChewingFactory,
+       !mixedInputSegmentStream.isEmpty {
+      // 一併 commit mixed segment stream（中文 + raw）並清空相容欄位。
+      let textToCommit = mixedInputSegmentStream.displayText
       composer.clear()
-      let asciiText = mixedAlphanumericalBuffer
+      mixedInputRawBuffer.clear()
+      mixedInputSegmentStream.clear(keepingParser: composer.parser)
       mixedAlphanumericalBuffer.removeAll()
-      // 一併 commit 組字區中已組好的中文（若有）。
-      let chineseText = committableDisplayText(sansReading: true)
-      session.switchState(State.ofCommitting(textToCommit: chineseText + asciiText))
+      session.switchState(State.ofCommitting(textToCommit: textToCommit))
+      return true
+    }
+
+    if prefs.mixedAlphanumericalEnabled, !mixedAlphanumericalBuffer.isEmpty {
+      // Legacy fallback for callers/tests that still seed only mixedAlphanumericalBuffer.
+      let textToCommit = committableDisplayText(sansReading: true)
+      composer.clear()
+      mixedInputRawBuffer.clear()
+      mixedInputSegmentStream.clear(keepingParser: composer.parser)
+      mixedAlphanumericalBuffer.removeAll()
+      session.switchState(State.ofCommitting(textToCommit: textToCommit))
       return true
     }
 
@@ -540,8 +614,21 @@ extension InputHandlerProtocol {
       return false
     }
 
+    if currentTypingMethod == .vChewingFactory,
+       !mixedInputSegmentStream.isEmpty {
+      _ = mixedInputSegmentStream.backspace()
+      mixedInputRawBuffer = mixedInputSegmentStream.activeRawBuffer
+      mixedAlphanumericalBuffer = mixedInputSegmentStream.activeRawText
+      switch isConsideredEmptyForNow {
+      case false: session.switchState(generateStateOfInputting())
+      case true: session.switchState(State.ofAbortion())
+      }
+      return true
+    }
+
     if currentTypingMethod == .vChewingFactory, !mixedAlphanumericalBuffer.isEmpty {
-      mixedAlphanumericalBuffer = mixedAlphanumericalBuffer.dropLast().description
+      _ = mixedInputRawBuffer.backspace()
+      mixedAlphanumericalBuffer = mixedInputRawBuffer.rawBuffer
       syncComposerWithMixedAlphanumericalBuffer()
       switch isConsideredEmptyForNow {
       case false: session.switchState(generateStateOfInputting())

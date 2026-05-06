@@ -69,7 +69,36 @@ public final class InputHandler: @MainActor InputHandlerProtocol {
 
   public var strCodePointBuffer = "" // 內碼輸入專用組碼區
   public var calligrapher = "" // 磁帶專用組筆區
-  public var mixedAlphanumericalBuffer = "" // 混輸暫存 ASCII 緩衝區
+  public var mixedAlphanumericalBuffer = "" { // 混輸暫存 ASCII 緩衝區
+    didSet {
+      if mixedAlphanumericalBuffer != mixedInputRawBuffer.rawBuffer {
+        mixedInputRawBuffer = MixedInputRawBuffer(parser: composer.parser)
+        for key in mixedAlphanumericalBuffer.map(\.description) {
+          _ = mixedInputRawBuffer.receive(key)
+        }
+      }
+      if mixedAlphanumericalBuffer.isEmpty {
+        return
+      }
+      guard mixedInputSegmentStream.activeRawText != mixedAlphanumericalBuffer else { return }
+      guard !mixedInputRawBuffer.rawBuffer.isEmpty else { return }
+      let existingRawTexts = mixedInputSegmentStream.rawTextSegments
+      guard existingRawTexts != [mixedAlphanumericalBuffer] else { return }
+      if mixedInputSegmentStream.isEmpty {
+        mixedInputSegmentStream = MixedInputSegmentStream(parser: composer.parser)
+      }
+      var stream = mixedInputSegmentStream
+      if !stream.activeRawText.isEmpty {
+        while !stream.activeRawText.isEmpty { _ = stream.backspace() }
+      }
+      for key in mixedAlphanumericalBuffer.map(\.description) {
+        _ = stream.appendRawKey(key)
+      }
+      mixedInputSegmentStream = stream
+    }
+  }
+  public var mixedInputRawBuffer = MixedInputRawBuffer(parser: .ofDachen) // 混輸 Trie 增量驗證狀態
+  public var mixedInputSegmentStream = MixedInputSegmentStream(parser: .ofDachen) // 混輸 Trie/raw segment stream
   public var composer: Composer = .init() // 注拼槽
   public var assembler: Assembler // 組字器
 

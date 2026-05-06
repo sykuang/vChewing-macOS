@@ -48,6 +48,8 @@ public protocol InputHandlerProtocol: AnyObject, InputHandlerCoreProtocol {
   var strCodePointBuffer: String { get set } // 內碼輸入專用組碼區
   var calligrapher: String { get set } // 磁帶專用組筆區
   var mixedAlphanumericalBuffer: String { get set } // 混輸暫存 ASCII 緩衝區
+  var mixedInputRawBuffer: MixedInputRawBuffer { get set } // 混輸 Trie 增量驗證狀態
+  var mixedInputSegmentStream: MixedInputSegmentStream { get set } // 混輸 Trie/raw segment stream
   var composer: Tekkon.Composer { get set } // 注拼槽
   var assembler: Homa.Assembler { get set } // 組字器
 }
@@ -404,6 +406,8 @@ extension InputHandlerProtocol {
     calligrapher.removeAll()
     composer.clear()
     mixedAlphanumericalBuffer.removeAll()
+    mixedInputRawBuffer.clear()
+    mixedInputSegmentStream.clear(keepingParser: composer.parser)
     strCodePointBuffer.removeAll()
   }
 
@@ -422,6 +426,10 @@ extension InputHandlerProtocol {
       return
     }
     rebuiltComposer.receiveSequence(mixedAlphanumericalBuffer, isRomaji: false)
+    mixedInputRawBuffer.clear()
+    for key in mixedAlphanumericalBuffer.map(\.description) {
+      _ = mixedInputRawBuffer.receive(key)
+    }
     if !rebuiltComposer.isPronounceable {
       rebuiltComposer.clear()
     }
@@ -443,6 +451,7 @@ extension InputHandlerProtocol {
     case .vChewingFactory:
       assembler.isEmpty
         && isComposerOrCalligrapherEmpty
+        && mixedInputSegmentStream.isEmpty
     }
   }
 
@@ -518,15 +527,20 @@ extension InputHandlerProtocol {
 
   var readingForDisplay: String {
     if !prefs.cassetteEnabled {
-      let currentReading = composer.getInlineCompositionForDisplay(
-        isHanyuPinyin: prefs.showHanyuPinyinInCompositionBuffer
-      )
+      let currentReading = composerReadingForDisplay
       return currentReading.isEmpty ? mixedAlphanumericalBuffer : currentReading
     }
     if !prefs.showTranslatedStrokesInCompositionBuffer { return calligrapher }
     return calligrapher.map(\.description).map {
       currentLM.convertCassetteKeyToDisplay(char: $0)
     }.joined()
+  }
+
+  var composerReadingForDisplay: String {
+    guard !prefs.cassetteEnabled else { return "" }
+    return composer.getInlineCompositionForDisplay(
+      isHanyuPinyin: prefs.showHanyuPinyinInCompositionBuffer
+    )
   }
 
   func isInvalidEdgeCursorSituation(givenCursor: Int? = nil) -> Bool {
