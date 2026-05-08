@@ -798,11 +798,42 @@ extension InputHandlerProtocol {
     }
   }
 
+  /// Mixed POM query domain：永遠只查最後一塊 `.chinese` buffer。
+  /// 該 buffer 的 query 內容必須等價於把它單獨拿去走純中文路徑得到的 Homa assembled nodes；
+  /// 不論前面是否存在 raw boundary，都不可把最後中文段人工壓成單一 Gram。
+  func mixedInputPOMQueryOverrideForLastChineseSegment()
+    -> (assembledSentence: [Homa.GramInPath], cursor: Int, globalReadingStart: Int)? {
+    guard let lastChineseSegment = mixedInputSegmentStream.lastChineseSegment else { return nil }
+    let fullAssembledSentence = assembler.assembledSentence
+    guard !fullAssembledSentence.isEmpty else { return nil }
+
+    let sliceStart = max(lastChineseSegment.readingStart, 0)
+    let sliceEnd = sliceStart + lastChineseSegment.readings.count
+    var cursor = 0
+    var sliced = [Homa.GramInPath]()
+    for gramInPath in fullAssembledSentence {
+      let nextCursor = cursor + gramInPath.keyArray.count
+      if cursor >= sliceStart, nextCursor <= sliceEnd {
+        sliced.append(gramInPath)
+      }
+      cursor = nextCursor
+    }
+    guard !sliced.isEmpty, sliced.totalKeyCount == lastChineseSegment.readings.count else { return nil }
+    let localCursor = max(0, min(actualNodeCursorPosition - sliceStart, sliced.totalKeyCount))
+    return (
+      assembledSentence: sliced,
+      cursor: localCursor,
+      globalReadingStart: sliceStart
+    )
+  }
+
   /// 向漸退引擎詢問可能的選字建議、且套用給組字器內的當前游標位置。
   @discardableResult
   func retrievePOMSuggestions(
     apply: Bool,
-    rawCandidates: [Homa.CandidatePairWeighted]? = nil
+    rawCandidates: [Homa.CandidatePairWeighted]? = nil,
+    mixedInputReadBufferOverride: (assembledSentence: [Homa.GramInPath], cursor: Int, globalReadingStart: Int)? = nil,
+    didApply: (() -> ())? = nil
   )
     -> [(String, Homa.Gram)] {
     var arrResult = [(String, Homa.Gram)]()
@@ -810,10 +841,23 @@ extension InputHandlerProtocol {
     if prefs.useSCPCTypingMode { return arrResult }
     /// 如果這個開關沒打開的話，直接放棄執行這個函式。
     if !prefs.fetchSuggestionsFromPerceptionOverrideModel { return arrResult }
+    let queryAssembledSentence: [Homa.GramInPath]
+    let queryCursor: Int
+    let globalCursorOffset: Int
+    if let mixedInputReadBufferOverride {
+      guard !mixedInputReadBufferOverride.assembledSentence.isEmpty else { return arrResult }
+      queryAssembledSentence = mixedInputReadBufferOverride.assembledSentence
+      queryCursor = mixedInputReadBufferOverride.cursor
+      globalCursorOffset = mixedInputReadBufferOverride.globalReadingStart
+    } else {
+      queryAssembledSentence = assembler.assembledSentence
+      queryCursor = actualNodeCursorPosition
+      globalCursorOffset = 0
+    }
     /// 獲取來自漸退記憶模組的建議結果
     let suggestion = currentLM.fetchPOMSuggestion(
-      assembledResult: assembler.assembledSentence,
-      cursor: actualNodeCursorPosition,
+      assembledResult: queryAssembledSentence,
+      cursor: queryCursor,
       timestamp: Date().timeIntervalSince1970
     )
     // 以組字器實際返回的候選字詞權重來過濾 POM 建議：
@@ -826,7 +870,7 @@ extension InputHandlerProtocol {
         let overrideBehavior: Homa.Node.OverrideType = suggestion.forceHighScoreOverride
           ? .withSpecified
           : .withTopGramScore
-        let cursorForOverride = suggestion.overrideCursor ?? actualNodeCursorPosition
+        let cursorForOverride = (suggestion.overrideCursor ?? queryCursor) + globalCursorOffset
         if let gramHit = assembler.assembledSentence.findGram(at: cursorForOverride) {
           if gramHit.gram.keyArray.count > newestSuggestedCandidate.keyArray.count {
             // 若建議會將現有節點縮短（short->long 替換），要求建議的分數
@@ -841,16 +885,36 @@ extension InputHandlerProtocol {
         }
         // POM 建議的 keyArray 僅含 head reading（可能與實際候選的完整 keyArray 不符），
         // 因此一律使用 literal override（不查 keyArray）讓 Homa 按 value 搜尋重疊節點。
-        _ = try? assembler.overrideCandidateLiteral(
+        let applied = (try? assembler.overrideCandidateLiteral(
           newestSuggestedCandidate.value,
           at: cursorForOverride,
           overrideType: overrideBehavior,
           enforceRetokenization: true
-        )
+        )) != nil
+        if applied {
+          didApply?()
+          syncMixedInputSegmentStreamChineseSegmentsFromAssembler()
+        }
       }
     }
     arrResult = arrResult.stableSort { $0.1.probability > $1.1.probability }
     return arrResult
+  }
+
+  /// Mixed input 的 display/commit source of truth 是 `MixedInputSegmentStream`。
+  /// POM 套用會先改 Homa assembler；若目前有 mixed stream，需把 assembler 的中文結果
+  /// 依 reading 順序同步回各個 `.chinese` segment，同時保留 `.raw` segment 作為硬邊界。
+  func syncMixedInputSegmentStreamChineseSegmentsFromAssembler() {
+    guard prefs.mixedAlphanumericalEnabled,
+          currentTypingMethod == .vChewingFactory,
+          !mixedInputSegmentStream.isEmpty
+    else { return }
+
+    let perReadingPairs = assembler.assembledSentence.smashedPairs.map { (reading: $0.key, value: $0.value) }
+    let streamChineseReadings = mixedInputSegmentStream.readingSegments.flatMap { $0 }
+
+    guard perReadingPairs.map(\.reading) == streamChineseReadings else { return }
+    mixedInputSegmentStream.replaceChineseSegments(withPerReadingValues: perReadingPairs.map(\.value))
   }
 
   // MARK: - POM short->long replacement helper

@@ -208,7 +208,6 @@ public struct MixedAlphanumericalTypewriter<Handler: InputHandlerProtocol>: Type
 
     let overflowText = handler.commitOverflownComposition
     let textToCommit = shouldCommitASCIIPrefix ? candidate.prefixText + overflowText : ""
-    handler.retrievePOMSuggestions(apply: shouldCommitASCIIPrefix)
     handler.composer.clear()
     if shouldCommitASCIIPrefix {
       handler.mixedInputRawBuffer.clear()
@@ -233,8 +232,16 @@ public struct MixedAlphanumericalTypewriter<Handler: InputHandlerProtocol>: Type
         stream.replaceActiveRawWithChinese(replacement)
       }
       handler.mixedInputSegmentStream = stream
-      handler.mixedInputRawBuffer = stream.activeRawBuffer
-      handler.mixedAlphanumericalBuffer = stream.activeRawText
+      if !shouldCommitASCIIPrefix,
+         let mixedPOMQuery = handler.mixedInputPOMQueryOverrideForLastChineseSegment() {
+        handler.retrievePOMSuggestions(
+          apply: true,
+          mixedInputReadBufferOverride: mixedPOMQuery
+        )
+        handler.syncMixedInputSegmentStreamChineseSegmentsFromAssembler()
+      }
+      handler.mixedInputRawBuffer = handler.mixedInputSegmentStream.activeRawBuffer
+      handler.mixedAlphanumericalBuffer = handler.mixedInputSegmentStream.activeRawText
     }
 
     var inputting = handler.generateStateOfInputting()
@@ -259,6 +266,7 @@ public struct MixedAlphanumericalTypewriter<Handler: InputHandlerProtocol>: Type
     guard let terminalCommit else { return nil }
     let suffixText = terminalCommit.suffix
     guard rawBuffer.rawBuffer.hasSuffix(suffixText) else { return nil }
+    if shouldVetoTerminalCommitForCompletedEnglishToken(rawText: rawBuffer.rawBuffer) { return nil }
     if rawBuffer.rawBuffer.count > 1, rawBuffer.rawBuffer != suffixText {
       guard rawBuffer.currentTerminalContinuationState != .terminal else { return nil }
       guard !terminalCommit.startsAfterASCIIAlnum || terminalCommit.hasWordLikeASCIIPrefixBeforeSuffix else { return nil }
@@ -268,6 +276,13 @@ public struct MixedAlphanumericalTypewriter<Handler: InputHandlerProtocol>: Type
       prefixText: "",
       suffixText: suffixText
     )
+  }
+
+  private func shouldVetoTerminalCommitForCompletedEnglishToken(rawText: String) -> Bool {
+    guard let completedToken = EnglishWordLexicon.completedASCIIToken(beforeTrailingBoundary: rawText) else {
+      return false
+    }
+    return EnglishWordLexicon.bundled.containsExactToken(completedToken)
   }
 
   private func buildTerminalSuffixCandidate(

@@ -5,6 +5,27 @@
 
 extension ZhuyinKeyTrie {
   static let dachenTerminalData: String = """
+1␠
+2␠
+5␠
+a␠
+b␠
+c␠
+d␠
+e␠
+f␠
+g␠
+h␠
+n␠
+q␠
+r␠
+s␠
+t␠
+v␠
+w␠
+x␠
+y␠
+z␠
 ,␠
 -␠
 -3

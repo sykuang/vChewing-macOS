@@ -84,6 +84,20 @@ public struct MixedInputSegmentStream: Sendable {
     }
   }
 
+  public var lastChineseSegment: (text: String, readings: [String], readingStart: Int)? {
+    var readingStart = readingCount
+    for segment in segments.reversed() {
+      switch segment {
+      case let .chinese(text, readings):
+        readingStart -= readings.count
+        return (text, readings, readingStart)
+      case .raw:
+        continue
+      }
+    }
+    return nil
+  }
+
   public var readingCount: Int {
     readingSegments.reduce(0) { $0 + $1.count }
   }

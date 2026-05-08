@@ -37,6 +37,9 @@ let package = Package(
         .product(name: "SwiftExtension", package: "vChewing_SwiftExtension"),
         .product(name: "Tekkon", package: "vChewing_Tekkon"),
       ],
+      resources: [
+        .process("Resources"),
+      ],
       swiftSettings: [
         .defaultIsolation(MainActor.self), // set Default Actor Isolation
       ],

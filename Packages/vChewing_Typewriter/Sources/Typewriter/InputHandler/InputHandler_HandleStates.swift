@@ -35,13 +35,26 @@ extension InputHandlerProtocol {
     var displayTextSegments: [String] = handleAsCodePointInput || handleAsRomanNumeralInput
       ? [strCodePointBuffer]
       : compositionBufferDisplayTextSegments(reflectBPMFVS: !sansReading)
+    let usesMixedSegmentStream = !handleAsCodePointInput
+      && !handleAsRomanNumeralInput
+      && !mixedInputSegmentStream.isEmpty
+      && prefs.mixedAlphanumericalEnabled
+      && currentTypingMethod == .vChewingFactory
+    if usesMixedSegmentStream {
+      displayTextSegments = mixedInputSegmentStream.displayTextSegments
+    }
     // 原始（未經 BPMFVS 投影）的文字片段。僅在 BPMFVS 投影啟用時才需要額外追蹤。
     var rawSegments: [String]? = (!handleAsCodePointInput && !handleAsRomanNumeralInput && !sansReading)
       ? rawDisplayTextSegmentsIfNeeded
       : nil
+    if usesMixedSegmentStream {
+      rawSegments = nil
+    }
     var cursor = handleAsCodePointInput || handleAsRomanNumeralInput
       ? displayTextSegments.joined().count
-      : convertCursorForDisplay(assembler.cursor)
+      : usesMixedSegmentStream
+        ? mixedInputSegmentStream.displayCursor(forReadingCursor: assembler.cursor)
+        : convertCursorForDisplay(assembler.cursor)
     let cursorSansReading = cursor
     // 先提出來讀音資料，減輕運算負擔。
     let noReading = sansReading || [.codePoint, .romanNumerals].contains(currentTypingMethod)
@@ -51,9 +64,11 @@ extension InputHandlerProtocol {
       : ""
     let reading: String = noReading
       ? ""
-      : mixedRawPrefix.isEmpty
-        ? readingForDisplay
-        : ""
+      : usesMixedSegmentStream
+        ? ""
+        : mixedRawPrefix.isEmpty
+          ? readingForDisplay
+          : ""
     if !reading.isEmpty {
       var newDisplayTextSegments = [String]()
       var temporaryNode = ""

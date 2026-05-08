@@ -4,6 +4,37 @@ import Testing
 
 @Suite("MixedInputRawBufferTests", .serialized)
 struct MixedInputRawBufferTests {
+  @Test func bundledEnglishLexiconParsesHunspellStemsForExactLookupOnly() {
+    let lexicon = EnglishWordLexicon(hunspellDictionaryText: """
+    3
+    Hell/SM
+    value/nm
+    l/AB
+    """)
+
+    #expect(lexicon.count == 3)
+    #expect(lexicon.containsExactToken("hell"))
+    #expect(lexicon.containsExactToken("Hell"))
+    #expect(lexicon.containsExactToken("value"))
+    #expect(lexicon.containsExactToken("l"))
+    #expect(!lexicon.containsExactToken("hello"))
+    #expect(!lexicon.containsExactToken("123"))
+  }
+
+  @Test func completedASCIITokenRequiresTrailingBoundary() {
+    #expect(EnglishWordLexicon.completedASCIIToken(beforeTrailingBoundary: "What the hell ") == "hell")
+    #expect(EnglishWordLexicon.completedASCIIToken(beforeTrailingBoundary: "woo ") == "woo")
+    #expect(EnglishWordLexicon.completedASCIIToken(beforeTrailingBoundary: "ru ") == nil)
+    #expect(EnglishWordLexicon.completedASCIIToken(beforeTrailingBoundary: "Y5.6 ") == nil)
+    #expect(EnglishWordLexicon.completedASCIIToken(beforeTrailingBoundary: "hell") == nil)
+  }
+
+  @Test func bundledEnglishLexiconContainsWooormDictionaryWords() {
+    #expect(EnglishWordLexicon.bundled.count > 40_000)
+    #expect(EnglishWordLexicon.bundled.containsExactToken("hell"))
+    #expect(EnglishWordLexicon.bundled.containsExactToken("film"))
+  }
+
   @Test func receiveDoesNotMutateRawBufferWhenTerminalSuffixValidates() {
     var buffer = MixedInputRawBuffer(parser: .ofDachen)
 
@@ -145,7 +176,7 @@ struct MixedInputRawBufferTests {
     #expect(match == nil, "Suffix matcher follows dictionary-derived trie; live composer still handles o4 as ㄟˋ")
   }
 
-  @Test func dachenTrieDataDoesNotContainBareConsonantFirstToneTerminals() {
+  @Test func dachenTrieDataKeepsBareConsonantFirstToneTerminalsForValidReadings() {
     let trie = ZhuyinKeyTrie.shared(for: .ofDachen)
     for key in [
       "1", "q", "a", "z",
@@ -155,11 +186,11 @@ struct MixedInputRawBufferTests {
       "5", "t", "g", "b",
       "y", "h", "n",
     ] {
-      #expect(trie.state(for: [key, " "]) == .dead)
+      #expect(trie.state(for: [key, " "]) == .terminal)
     }
   }
 
-  @Test func dachenTrieStillKeepsRealSyllablesAfterRemovingBareConsonantTerminals() {
+  @Test func dachenTrieStillKeepsRealSyllablesAlongsideBareConsonantFirstToneTerminals() {
     let trie = ZhuyinKeyTrie.shared(for: .ofDachen)
 
     #expect(trie.state(for: ["s", "u", "3"]) == .terminal) // ㄋㄧˇ

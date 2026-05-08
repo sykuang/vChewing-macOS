@@ -622,6 +622,37 @@ extension InputHandlerTests {
     #expect(testHandler.committableDisplayText(sansReading: true) == s.expectedComposedText, "\(s.id) composed")
   }
 
+  @Test(arguments: [
+    SpaceFinalizeTerminalSuffixScenario(
+      id: "IH409C", input: "g ",
+      expectedCommissions: [], expectedComposedText: "詩"
+    ),
+    SpaceFinalizeTerminalSuffixScenario(
+      id: "IH409D", input: "n ",
+      expectedCommissions: [], expectedComposedText: "司"
+    ),
+    SpaceFinalizeTerminalSuffixScenario(
+      id: "IH409E", input: "t ",
+      expectedCommissions: [], expectedComposedText: "吃"
+    ),
+  ])
+  private func test_IH409B_MixedBareConsonantFirstToneStaysInTrie(_ s: SpaceFinalizeTerminalSuffixScenario) throws {
+    let (testHandler, testSession) = try prepareMixedModeHandler()
+    let rawSequence = s.input
+    guard let gram = makeTemporaryGram(rawSequence: rawSequence, value: s.expectedComposedText, score: 999, using: testHandler) else {
+      Issue.record("Failed to create gram for \(rawSequence)")
+      return
+    }
+    testHandler.currentLM.insertTemporaryData(unigram: gram, isFiltering: false)
+    defer { testHandler.currentLM.clearTemporaryData(isFiltering: false); testHandler.clear() }
+
+    typeSentence(s.input)
+
+    #expect(testSession.recentCommissions == s.expectedCommissions, "\(s.id) commissions")
+    #expect(testHandler.committableDisplayText(sansReading: true) == s.expectedComposedText, "\(s.id) composed")
+    #expect(testHandler.mixedInputSegmentStream.displayText == s.expectedComposedText, "\(s.id) stream")
+  }
+
   /// `acceptLeadingIntonations = false` 時，mixed mode 的聲調前置路徑應被封鎖。
   /// 大千排列下 `3su` = ˇ（前置）+ ㄋ + ㄧ = ㄋㄧˇ（你）；
   /// 啟用時應進入注音路徑（整段可發音），停用時應作為 ASCII 留在 buffer。
@@ -701,6 +732,9 @@ extension InputHandlerTests {
     ),
     SpaceAsRawASCIIScenario(
       id: "IH411D", inputSequence: ["What the ", "hell", " "], expectedComposition: "What the hell "
+    ),
+    SpaceAsRawASCIIScenario(
+      id: "IH411E", inputSequence: ["That was ", "woo", " "], expectedComposition: "That was woo "
     ),
   ])
   private func test_IH411_MixedSpaceStaysInRawASCIIStream(_ s: SpaceAsRawASCIIScenario) throws {
@@ -1894,6 +1928,198 @@ extension InputHandlerTests {
     #expect(testSession.state.displayedText == "themall難生必買")
     #expect(!testSession.state.displayedText.hasSuffix("themall"))
     #expect(testHandler.mixedInputSegmentStream.displayText == "themall南生必買")
+  }
+
+  /// Mixed input 的 terminal conversion 應在套用 POM 後同步中文分段文字，
+  /// 但 raw segment 必須維持硬邊界，不可被 assembler 的 retokenization flatten 掉。
+  @Test
+  func test_IH437_MixedInputPOMSyncsChineseSegmentsWithoutFlatteningRawBoundary() throws {
+    let (testHandler, testSession) = try prepareMixedModeHandler()
+    testHandler.prefs.fetchSuggestionsFromPerceptionOverrideModel = true
+    testHandler.prefs.useSCPCTypingMode = false
+    testHandler.prefs.useRearCursorMode = false
+    clearTestPOM()
+    let testKanjiData = """
+    ㄋㄧˇ 你 -1
+    ㄋㄧˇ 擬 -3
+    ㄏㄠˇ 好 -1
+    ㄋㄧˇ-ㄏㄠˇ 你好 -4
+    """
+    let cleanup = injectTemporaryGrams(testHandler, testKanjiData)
+    defer { cleanup(); clearTestPOM(); testHandler.clear() }
+
+    typeSentence("su3cl3")
+    #expect(testHandler.assembler.assembledSentence.map(\.value).joined() == "你好")
+    #expect(testHandler.mixedInputSegmentStream.segments == [
+      .chinese(text: "你好", readings: ["ㄋㄧˇ", "ㄏㄠˇ"]),
+    ])
+
+    typeSentence("test")
+    #expect(testHandler.mixedInputSegmentStream.displayText == "你好test")
+    #expect(testHandler.mixedInputSegmentStream.rawTextSegments == ["test"])
+
+    var suggestion = LMAssembly.OverrideSuggestion()
+    suggestion.candidates = [
+      (keyArray: ["ㄋㄧˇ"], value: "擬", probability: -0.1, previous: nil),
+    ]
+    suggestion.overrideCursor = 2
+    suggestion.forceHighScoreOverride = true
+    testHandler.currentLM.lxPerceptor.testInjectedSuggestion = suggestion
+
+    typeSentence("su3")
+
+    #expect(testHandler.assembler.assembledSentence.map(\.value).joined() == "你好擬")
+    #expect(testHandler.mixedInputSegmentStream.segments == [
+      .chinese(text: "你好", readings: ["ㄋㄧˇ", "ㄏㄠˇ"]),
+      .raw("test"),
+      .chinese(text: "擬", readings: ["ㄋㄧˇ"]),
+    ])
+    #expect(testSession.state.displayedText == "你好test擬")
+    #expect(testHandler.committableDisplayText(sansReading: true) == "你好test擬")
+  }
+
+  /// Mixed input 問 POM 時應只送 buffer 裡最後一塊 `.chinese` read buffer。
+  /// 例如 `你好 + raw(test) + 你` 應送尾段 `你`，不可送 flattened `你好你`。
+  @Test
+  func test_IH437B_MixedInputPOMQueriesLastChineseReadBufferOnly() throws {
+    let (testHandler, testSession) = try prepareMixedModeHandler()
+    testHandler.prefs.fetchSuggestionsFromPerceptionOverrideModel = true
+    testHandler.prefs.useSCPCTypingMode = false
+    testHandler.prefs.useRearCursorMode = false
+    clearTestPOM()
+    let testKanjiData = """
+    ㄋㄧˇ 你 -1
+    ㄋㄧˇ 擬 -3
+    ㄏㄠˇ 好 -1
+    ㄋㄧˇ-ㄏㄠˇ 你好 -4
+    """
+    let cleanup = injectTemporaryGrams(testHandler, testKanjiData)
+    defer { cleanup(); clearTestPOM(); testHandler.clear() }
+
+    let tailGram = Homa.Gram(
+      keyArray: ["ㄋㄧˇ"],
+      current: "你",
+      probability: 0
+    )
+    let tailQuery = [Homa.GramInPath(gram: tailGram, isExplicit: false)]
+    guard let tailPOMKey = tailQuery.generateKeyForPerception(cursor: 1)?.ngramKey else {
+      Issue.record("Unable to generate tail-only POM key.")
+      return
+    }
+    #expect(tailPOMKey == "()&()&(ㄋㄧˇ,你)")
+    typeSentence("su3cl3test")
+    #expect(testHandler.assembler.assembledSentence.map(\.value).joined() == "你好")
+    #expect(testHandler.mixedInputSegmentStream.displayText == "你好test")
+
+    testHandler.currentLM.memorizePerception(
+      (tailPOMKey, "擬"),
+      timestamp: Date().timeIntervalSince1970
+    )
+
+    typeSentence("su3")
+
+    #expect(testHandler.assembler.assembledSentence.map(\.value).joined() == "你好擬")
+    #expect(testHandler.mixedInputSegmentStream.segments == [
+      .chinese(text: "你好", readings: ["ㄋㄧˇ", "ㄏㄠˇ"]),
+      .raw("test"),
+      .chinese(text: "擬", readings: ["ㄋㄧˇ"]),
+    ])
+    #expect(testSession.state.displayedText == "你好test擬")
+  }
+
+  /// 同一塊中文段內，mixed POM query 必須保留 Homa assembled node segmentation，
+  /// 不可把整塊中文段壓成單一 Gram；否則 `未蛇麼` 這類三個單字節點無法被 POM retokenize 成 `為什麼`。
+  @Test
+  func test_IH437C_MixedInputPOMKeepsAssemblerNodeSegmentationWithinChineseSegment() throws {
+    let (testHandler, testSession) = try prepareMixedModeHandler()
+    testHandler.prefs.fetchSuggestionsFromPerceptionOverrideModel = true
+    testHandler.prefs.useSCPCTypingMode = false
+    testHandler.prefs.useRearCursorMode = false
+    clearTestPOM()
+    let testKanjiData = """
+    ㄋㄧˇ 你 -1
+    ㄏㄠˇ 好 -1
+    ㄋㄧˇ-ㄏㄠˇ 你好 -4
+    ㄨㄟˋ 未 -1
+    ㄕㄜˊ 蛇 -1
+    ㄇㄜ˙ 麼 -1
+    ㄨㄟˋ-ㄕㄜˊ-ㄇㄜ˙ 為什麼 -3
+    """
+    let cleanup = injectTemporaryGrams(testHandler, testKanjiData)
+    defer { cleanup(); clearTestPOM(); testHandler.clear() }
+
+    let query = [
+      Homa.GramInPath(gram: .init(keyArray: ["ㄨㄟˋ"], current: "未", probability: 0), isExplicit: false),
+      Homa.GramInPath(gram: .init(keyArray: ["ㄕㄜˊ"], current: "蛇", probability: 0), isExplicit: false),
+      Homa.GramInPath(gram: .init(keyArray: ["ㄇㄜ˙"], current: "麼", probability: 0), isExplicit: false),
+    ]
+    guard let pomKey = query.generateKeyForPerception(cursor: 3)?.ngramKey else {
+      Issue.record("Unable to generate POM key for 未蛇麼.")
+      return
+    }
+    testHandler.currentLM.memorizePerception(
+      (pomKey, "為什麼"),
+      timestamp: Date().timeIntervalSince1970
+    )
+
+    typeSentence("su3cl3jo4gk6ak7")
+
+    #expect(testHandler.assembler.assembledSentence.map(\.value).joined() == "你好為什麼")
+    #expect(testHandler.mixedInputSegmentStream.segments == [
+      .chinese(
+        text: "你好為什麼",
+        readings: ["ㄋㄧˇ", "ㄏㄠˇ", "ㄨㄟˋ", "ㄕㄜˊ", "ㄇㄜ˙"]
+      ),
+    ])
+    #expect(testSession.state.displayedText == "你好為什麼")
+  }
+
+  /// POM 同步必須以 stream 裡各段 `.chinese.readings` 作為對齊基準；
+  /// 只比 reading count 不夠，assembler readings 若與 stream Chinese readings 不一致，
+  /// 不可把 Homa 結果寫回 stream，避免 raw boundary 或 cursor drift 被誤蓋。
+  @Test
+  func test_IH437D_MixedInputPOMSyncRequiresReadingAlignment() throws {
+    let (testHandler, _) = try prepareMixedModeHandler()
+    testHandler.prefs.fetchSuggestionsFromPerceptionOverrideModel = true
+    testHandler.prefs.useSCPCTypingMode = false
+    testHandler.prefs.useRearCursorMode = false
+    clearTestPOM()
+    let testKanjiData = """
+    ㄋㄧˇ 你 -1
+    ㄋㄧˇ 擬 -3
+    ㄏㄠˇ 好 -1
+    ㄋㄧˇ-ㄏㄠˇ 你好 -4
+    """
+    let cleanup = injectTemporaryGrams(testHandler, testKanjiData)
+    defer { cleanup(); clearTestPOM(); testHandler.clear() }
+
+    typeSentence("su3cl3testsu3")
+    #expect(testHandler.mixedInputSegmentStream.segments == [
+      .chinese(text: "你好", readings: ["ㄋㄧˇ", "ㄏㄠˇ"]),
+      .raw("test"),
+      .chinese(text: "你", readings: ["ㄋㄧˇ"]),
+    ])
+
+    _ = try? testHandler.assembler.overrideCandidateLiteral(
+      "擬",
+      at: testHandler.actualNodeCursorPosition,
+      overrideType: .withSpecified,
+      enforceRetokenization: true
+    )
+    #expect(testHandler.assembler.assembledSentence.map(\.value).joined() == "你好擬")
+
+    testHandler.mixedInputSegmentStream = MixedInputSegmentStream(parser: testHandler.composer.parser)
+    testHandler.mixedInputSegmentStream.appendChinese(text: "你好", readings: ["ㄋㄧˇ", "ㄏㄠˇ"])
+    testHandler.mixedInputSegmentStream.appendRaw("test")
+    testHandler.mixedInputSegmentStream.appendChinese(text: "你", readings: ["ㄏㄞˊ"])
+
+    testHandler.syncMixedInputSegmentStreamChineseSegmentsFromAssembler()
+
+    #expect(testHandler.mixedInputSegmentStream.segments == [
+      .chinese(text: "你好", readings: ["ㄋㄧˇ", "ㄏㄠˇ"]),
+      .raw("test"),
+      .chinese(text: "你", readings: ["ㄏㄞˊ"]),
+    ])
   }
 
   // MARK: - Fileprivate Helpers.

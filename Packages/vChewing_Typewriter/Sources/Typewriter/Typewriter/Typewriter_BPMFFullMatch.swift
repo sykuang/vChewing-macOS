@@ -292,7 +292,24 @@ public struct BPMFFullMatchTypewriter<Handler: InputHandlerProtocol>: Typewriter
       when: prefs.readingNarrationCoverage == 1
     )
     let textToCommit = handler.commitOverflownComposition
-    handler.retrievePOMSuggestions(apply: true)
+    if handler.prefs.mixedAlphanumericalEnabled,
+       handler.currentTypingMethod == .vChewingFactory,
+       !handler.mixedInputSegmentStream.isEmpty,
+       let latestPair = handler.assembler.assembledSentence.smashedPairs.last {
+      handler.mixedInputSegmentStream.appendChinese(
+        text: latestPair.value,
+        readings: [latestPair.key]
+      )
+      if let mixedPOMQuery = handler.mixedInputPOMQueryOverrideForLastChineseSegment() {
+        handler.retrievePOMSuggestions(
+          apply: true,
+          mixedInputReadBufferOverride: mixedPOMQuery
+        )
+      }
+      handler.syncMixedInputSegmentStreamChineseSegmentsFromAssembler()
+    } else {
+      handler.retrievePOMSuggestions(apply: true)
+    }
     handler.composer.clear()
 
     var inputting = handler.generateStateOfInputting()
