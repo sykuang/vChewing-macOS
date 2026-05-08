@@ -360,6 +360,31 @@ extension InputHandlerProtocol {
       preConsolidate: prefs.consolidateContextOnCandidateSelection,
       skipObservation: true
     )
+    if !mixedInputSegmentStream.isEmpty,
+       prefs.mixedAlphanumericalEnabled,
+       currentTypingMethod == .vChewingFactory {
+      let previewStream = mixedInputSegmentStream.replacingChineseSegment(
+        containing: highlightedPair.keyArray,
+        with: highlightedPair.value,
+        readingCursor: currentCursor
+      )
+      theState.data.displayTextSegments = previewStream.displayTextSegments
+      theState.data.rawDisplayTextSegments = previewStream.displayTextSegments
+      theState.data.cursor = previewStream.displayCursor(forReadingCursor: assembler.cursor)
+      let markerBackup = assembler.marker
+      if assembler.isCursorAtEdge(direction: .front) {
+        try? assembler.jumpCursorBySegment(to: .rear, isMarker: true)
+      } else if assembler.isCursorAtEdge(direction: .rear) {
+        try? assembler.jumpCursorBySegment(to: .front, isMarker: true)
+      } else {
+        try? assembler.jumpCursorBySegment(to: prefs.useRearCursorMode ? .front : .rear, isMarker: true)
+      }
+      theState.data.marker = previewStream.displayCursor(forReadingCursor: assembler.marker)
+      assembler.marker = markerBackup
+      session.state = theState // 直接就地取代，不經過 switchState 處理，免得選字窗被重新載入。
+      session.updateCompositionBufferDisplay()
+      return
+    }
     theState.data.displayTextSegments = compositionBufferDisplayTextSegments()
     theState.data.rawDisplayTextSegments = rawDisplayTextSegmentsIfNeeded
     theState.data.cursor = convertCursorForDisplay(assembler.cursor)
@@ -488,6 +513,7 @@ extension InputHandlerProtocol {
 
   var isComposerOrCalligrapherEmpty: Bool {
     if !strCodePointBuffer.isEmpty { return false }
+    if !mixedInputSegmentStream.isEmpty { return true }
     if !mixedAlphanumericalBuffer.isEmpty { return false }
     return prefs.cassetteEnabled ? calligrapher.isEmpty : composer.isEmpty
   }
@@ -608,6 +634,14 @@ extension InputHandlerProtocol {
     /// 微軟新注音輸入法的游標後置風格也是不允許 nodeCrossing 的。
     let rawCandidates = fetchRawQueriedCandidatesFromAssembler()
     var arrCandidates = rawCandidates.map(\.pair)
+
+    if prefs.mixedAlphanumericalEnabled,
+       currentTypingMethod == .vChewingFactory,
+       !mixedInputSegmentStream.isEmpty {
+      arrCandidates = arrCandidates.filter {
+        mixedInputSegmentStream.containsCandidateWithinChineseSegment(keyArray: $0.keyArray)
+      }
+    }
 
     /// 原理：nodes 這個回饋結果包含一堆子陣列，分別對應不同詞長的候選字。
     /// 這裡先對陣列排序、讓最長候選字的子陣列的優先權最高。

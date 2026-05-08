@@ -780,7 +780,8 @@ extension MainAssemblyTests {
 
     _ = press(spaceEvent)
 
-    #expect(testClient.toString() == "What? ")
-    #expect(testSession.state.type == .ofEmpty)
+    #expect(testClient.toString().isEmpty)
+    #expect(testSession.state.type == .ofInputting)
+    #expect(testSession.state.displayedText == "What? ")
   }
 }

@@ -42,14 +42,42 @@ public struct MixedInputRawBuffer: Sendable {
   }
 
   public struct Commit: Equatable, Sendable {
-    public let literalPrefix: String
     public let suffix: String
     public let phonabet: String
+    public let startsAfterASCIIAlnum: Bool
+    public let hasWordLikeASCIIPrefixBeforeSuffix: Bool
 
-    public init(literalPrefix: String, suffix: String, phonabet: String) {
-      self.literalPrefix = literalPrefix
+    public init(
+      suffix: String,
+      phonabet: String,
+      startsAfterASCIIAlnum: Bool = false,
+      hasWordLikeASCIIPrefixBeforeSuffix: Bool = false
+    ) {
       self.suffix = suffix
       self.phonabet = phonabet
+      self.startsAfterASCIIAlnum = startsAfterASCIIAlnum
+      self.hasWordLikeASCIIPrefixBeforeSuffix = hasWordLikeASCIIPrefixBeforeSuffix
+    }
+
+    public var suffixIsLeadingIntonation: Bool {
+      guard let first = suffix.first else { return false }
+      switch first {
+      case "3", "4", "6", "7", " ": return true
+      default: return false
+      }
+    }
+  }
+
+  public enum Transition: Equatable, Sendable {
+    case continued(commit: Commit?)
+    case deadStayedRaw
+    case restartedFromCurrentKey(commit: Commit?)
+
+    public var commit: Commit? {
+      switch self {
+      case let .continued(commit), let .restartedFromCurrentKey(commit): commit
+      case .deadStayedRaw: nil
+      }
     }
   }
 
@@ -61,6 +89,7 @@ public struct MixedInputRawBuffer: Sendable {
     let activePhonabet: String
     let state: ZhuyinKeyTrie.AdvanceResult
     let terminalCommit: Commit?
+    let terminalContinuationState: ZhuyinKeyTrie.AdvanceResult?
   }
 
   public private(set) var rawBuffer = ""
@@ -94,7 +123,12 @@ public struct MixedInputRawBuffer: Sendable {
 
   @discardableResult
   public mutating func receive(_ key: String) -> Commit? {
-    guard let rawKey = key.first, key.count == 1 else { return nil }
+    receiveWithTransition(key).commit
+  }
+
+  @discardableResult
+  public mutating func receiveWithTransition(_ key: String) -> Transition {
+    guard let rawKey = key.first, key.count == 1 else { return .deadStayedRaw }
     rawBuffer.append(rawKey)
 
     let trie = ZhuyinKeyTrie.shared(for: parser)
@@ -103,6 +137,7 @@ public struct MixedInputRawBuffer: Sendable {
     let previousCursor = previous?.activeCursor ?? trie.rootCursor
     let previousStart = previous?.activeCursor == nil ? rawBuffer.count - 1 : previous?.activeSuffixStart
     let advanced = trie.advance(from: previousCursor, with: normalizedKey)
+    var didRestartFromCurrentKey = previous?.activeCursor == nil && previous != nil
 
     let activeCursor: ZhuyinKeyTrie.Cursor?
     let activeSuffixStart: Int?
@@ -118,6 +153,7 @@ public struct MixedInputRawBuffer: Sendable {
     } else {
       let restarted = trie.advance(from: trie.rootCursor, with: normalizedKey)
       if let restartedCursor = restarted.cursor {
+        didRestartFromCurrentKey = true
         activeCursor = restartedCursor
         activeSuffixStart = rawBuffer.count - 1
         state = restarted.state
@@ -137,8 +173,10 @@ public struct MixedInputRawBuffer: Sendable {
       activeSuffixStart: activeSuffixStart,
       activePhonabet: activePhonabet,
       state: state,
-      terminalCommit: nil
+      terminalCommit: nil,
+      terminalContinuationState: nil
     )
+    let terminalCommit = terminalCommit(for: frame)
     frame = Frame(
       rawKey: frame.rawKey,
       normalizedKey: frame.normalizedKey,
@@ -146,10 +184,13 @@ public struct MixedInputRawBuffer: Sendable {
       activeSuffixStart: frame.activeSuffixStart,
       activePhonabet: frame.activePhonabet,
       state: frame.state,
-      terminalCommit: terminalCommit(for: frame)
+      terminalCommit: terminalCommit,
+      terminalContinuationState: terminalCommit.flatMap { _ in terminalContinuationState(from: frame) }
     )
     frames.append(frame)
-    return frame.terminalCommit
+    if activeCursor == nil { return .deadStayedRaw }
+    if didRestartFromCurrentKey { return .restartedFromCurrentKey(commit: frame.terminalCommit) }
+    return .continued(commit: frame.terminalCommit)
   }
 
   public mutating func backspace() -> Bool {
@@ -188,22 +229,40 @@ public struct MixedInputRawBuffer: Sendable {
     let chars = Array(rawBuffer)
     guard chars.indices.contains(activeSuffixStart) else { return nil }
     let suffix = String(chars[activeSuffixStart...])
-    let literalPrefix = String(chars.prefix(activeSuffixStart))
     let phonabet = frame.activePhonabet
-
-    // One-letter + tone suffixes are too short to safely peel off an
-    // English-looking token (`discordu6`). Longer terminal suffixes remain valid
-    // because they are explicit new Zhuyin tails.
-    if literalPrefix.last.map({ $0.isASCII && ($0.isLetter || $0.isNumber) }) == true {
-      if suffix.count <= 2, suffix.first.map({ $0.isLetter }) == true {
-        return nil
-      }
-      if suffix.count == 3, suffix.first.map({ $0.isLetter }) == true, suffix.hasSuffix(" ") {
-        return nil
-      }
+    let startsAfterASCIIAlnum: Bool
+    if activeSuffixStart > 0 {
+      let previous = chars[chars.index(before: activeSuffixStart)]
+      startsAfterASCIIAlnum = previous.isASCII && (previous.isLetter || previous.isNumber)
+    } else {
+      startsAfterASCIIAlnum = false
     }
+    let prefixBeforeSuffix = String(chars[..<activeSuffixStart])
+    let hasWordLikeASCIIPrefixBeforeSuffix = prefixBeforeSuffix.range(
+      of: "[A-Za-z]{3,}[A-Za-z0-9]*$",
+      options: .regularExpression
+    ) != nil
+    return .init(
+      suffix: suffix,
+      phonabet: phonabet,
+      startsAfterASCIIAlnum: startsAfterASCIIAlnum,
+      hasWordLikeASCIIPrefixBeforeSuffix: hasWordLikeASCIIPrefixBeforeSuffix
+    )
+  }
 
-    return .init(literalPrefix: literalPrefix, suffix: suffix, phonabet: phonabet)
+  public var currentTerminalContinuationState: ZhuyinKeyTrie.AdvanceResult? {
+    frames.last?.terminalContinuationState
+  }
+
+  private func terminalContinuationState(from frame: Frame) -> ZhuyinKeyTrie.AdvanceResult? {
+    guard frame.state == .terminal,
+          let cursor = frame.activeCursor,
+          let previous = frames.last,
+          let previousSuffixStart = previous.activeSuffixStart,
+          previousSuffixStart == frame.activeSuffixStart
+    else { return nil }
+    let trie = ZhuyinKeyTrie.shared(for: parser)
+    return trie.advance(from: cursor, with: previous.normalizedKey).state
   }
 
   public static func longestTonedSuffix(

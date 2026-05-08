@@ -7,6 +7,7 @@
 // requirements defined in MIT License.
 
 import Foundation
+import Homa
 import Testing
 
 @testable import MainAssembly4Darwin
@@ -122,6 +123,195 @@ extension MainAssemblyTests {
     testSession.resetInputHandler()
 
     #expect(testClient.toString() == "abc")
+    #expect(testSession.state.type == .ofEmpty)
+  }
+
+  /// 回歸：mixed segment stream 已經包含中文 + raw tail 全文時，resetInputHandler
+  /// 不得再把相容欄位 mixedAlphanumericalBuffer 追加一次。
+  @Test
+  func test505_ResetCommitsMixedSegmentStreamWithoutDuplicatingRawTail() throws {
+    testSession.resetInputHandler(forceComposerCleanup: true)
+    testClient.clear()
+    testHandler.clear()
+    testHandler.prefs.mixedAlphanumericalEnabled = true
+    testHandler.currentLM.insertTemporaryData(
+      unigram: Homa.Gram(keyArray: ["ㄋㄧˇ"], value: "你", score: -1),
+      isFiltering: false
+    )
+    testHandler.currentLM.insertTemporaryData(
+      unigram: Homa.Gram(keyArray: ["ㄏㄠˇ"], value: "好", score: -1),
+      isFiltering: false
+    )
+    testHandler.currentLM.insertTemporaryData(
+      unigram: Homa.Gram(keyArray: ["ㄋㄧˇ", "ㄏㄠˇ"], value: "你好", score: -2),
+      isFiltering: false
+    )
+    defer {
+      testHandler.currentLM.clearTemporaryData(isFiltering: false)
+      testHandler.clear()
+      testClient.clear()
+    }
+
+    typeSentenceOrCandidates("su3cl3testsu3")
+
+    #expect(testSession.state.type == .ofInputting)
+    #expect(testSession.state.displayedText == "你好test你")
+    #expect(testHandler.mixedAlphanumericalBuffer.isEmpty)
+    #expect(testHandler.mixedInputSegmentStream.displayText == "你好test你")
+
+    testSession.resetInputHandler()
+
+    #expect(testClient.toString() == "你好test你")
+    #expect(testSession.state.type == .ofEmpty)
+  }
+
+  /// 回歸：MainAssembly / InputSession 路徑下，mixed stream 中間有 raw segment 時，
+  /// 尾端中文選字不可跨 raw boundary，也不可在確認候選後把 raw segment 重複復活。
+  @Test
+  func test506_MixedStackBufferSelectsTrailingChineseAfterMiddleRaw() throws {
+    testSession.resetInputHandler(forceComposerCleanup: true)
+    testClient.clear()
+    testHandler.clear()
+    testHandler.prefs.useSCPCTypingMode = false
+    testHandler.prefs.useRearCursorMode = false
+    testHandler.prefs.fetchSuggestionsFromPerceptionOverrideModel = false
+    testHandler.prefs.mixedAlphanumericalEnabled = true
+    testHandler.currentLM.insertTemporaryData(
+      unigram: Homa.Gram(keyArray: ["ㄋㄧˇ"], value: "你", score: -1),
+      isFiltering: false
+    )
+    testHandler.currentLM.insertTemporaryData(
+      unigram: Homa.Gram(keyArray: ["ㄏㄠˇ"], value: "好", score: -1),
+      isFiltering: false
+    )
+    testHandler.currentLM.insertTemporaryData(
+      unigram: Homa.Gram(keyArray: ["ㄏㄠˇ"], value: "郝", score: -2),
+      isFiltering: false
+    )
+    testHandler.currentLM.insertTemporaryData(
+      unigram: Homa.Gram(keyArray: ["ㄋㄧˇ", "ㄏㄠˇ"], value: "你好", score: -2),
+      isFiltering: false
+    )
+    defer {
+      testHandler.currentLM.clearTemporaryData(isFiltering: false)
+      testHandler.clear()
+      testClient.clear()
+    }
+
+    typeSentenceOrCandidates("su3cl3testcl3")
+
+    #expect(testClient.toString().isEmpty)
+    #expect(testSession.state.type == .ofInputting)
+    #expect(testSession.state.displayedText == "你好test好")
+    #expect(testSession.state.cursor == "你好test好".count)
+    #expect(testHandler.mixedInputSegmentStream.displayTextSegments == ["你好", "test", "好"])
+    #expect(testHandler.mixedInputSegmentStream.activeRawText.isEmpty)
+    #expect(testHandler.mixedAlphanumericalBuffer.isEmpty)
+
+    press(nextCandidateEvent)
+
+    #expect(testSession.state.type == .ofCandidates)
+    #expect(testSession.state.displayedText == "你好test好")
+    #expect(testSession.state.cursor == "你好test好".count)
+
+    guard let targetIndex = testSession.state.candidates.firstIndex(where: { $0.value == "郝" }) else {
+      Issue.record("Expected candidate 郝 for trailing 好 among: \(testSession.state.candidates.map(\.value))")
+      return
+    }
+
+    testSession.candidatePairHighlightChanged(at: targetIndex)
+    #expect(testSession.state.type == .ofCandidates)
+    #expect(testSession.state.displayedText == "你好test郝")
+    #expect(testSession.state.displayTextSegments == ["你好", "test", "郝"])
+    #expect(testSession.state.cursor == "你好test郝".count)
+    #expect(testHandler.mixedInputSegmentStream.displayTextSegments == ["你好", "test", "好"])
+
+    testSession.candidatePairSelectionConfirmed(at: targetIndex)
+    #expect(testSession.state.type == .ofInputting)
+    #expect(testSession.state.displayedText == "你好test郝")
+    #expect(testSession.state.cursor == "你好test郝".count)
+    #expect(testHandler.mixedInputSegmentStream.displayTextSegments == ["你好", "test", "郝"])
+    #expect(testHandler.mixedInputSegmentStream.activeRawText.isEmpty)
+    #expect(testHandler.mixedAlphanumericalBuffer.isEmpty)
+
+    testClient.clear()
+    press(dataEnterReturn)
+    #expect(testClient.toString() == "你好test郝")
+    #expect(testSession.state.type == .ofEmpty)
+  }
+
+  /// 回歸：mixed mode 在空組字區先輸入 Space 時，Space 應作為 raw segment 保留；
+  /// 接著開始輸入注音時，後續中文 segment 不可吞掉、重排或重複前導空白。
+  @Test
+  func test507_MixedLeadingSpaceThenZhuyinKeepsRawBoundary() throws {
+    testSession.resetInputHandler(forceComposerCleanup: true)
+    testClient.clear()
+    testHandler.clear()
+    testHandler.prefs.useSCPCTypingMode = false
+    testHandler.prefs.useRearCursorMode = false
+    testHandler.prefs.fetchSuggestionsFromPerceptionOverrideModel = false
+    testHandler.prefs.mixedAlphanumericalEnabled = true
+    testHandler.currentLM.insertTemporaryData(
+      unigram: Homa.Gram(keyArray: ["ㄋㄧˇ"], value: "你", score: -1),
+      isFiltering: false
+    )
+    testHandler.currentLM.insertTemporaryData(
+      unigram: Homa.Gram(keyArray: ["ㄏㄠˇ"], value: "好", score: -1),
+      isFiltering: false
+    )
+    testHandler.currentLM.insertTemporaryData(
+      unigram: Homa.Gram(keyArray: ["ㄏㄠˇ"], value: "郝", score: -2),
+      isFiltering: false
+    )
+    testHandler.currentLM.insertTemporaryData(
+      unigram: Homa.Gram(keyArray: ["ㄋㄧˇ", "ㄏㄠˇ"], value: "你好", score: -2),
+      isFiltering: false
+    )
+    defer {
+      testHandler.currentLM.clearTemporaryData(isFiltering: false)
+      testHandler.clear()
+      testClient.clear()
+    }
+
+    typeSentenceOrCandidates(" su3cl3")
+
+    #expect(testClient.toString().isEmpty)
+    #expect(testSession.state.type == .ofInputting)
+    #expect(testSession.state.displayedText == " 你好")
+    #expect(testSession.state.cursor == " 你好".count)
+    #expect(testHandler.mixedInputSegmentStream.displayTextSegments == [" ", "你好"])
+    #expect(testHandler.mixedInputSegmentStream.activeRawText.isEmpty)
+    #expect(testHandler.mixedAlphanumericalBuffer.isEmpty)
+
+    press(nextCandidateEvent)
+
+    #expect(testSession.state.type == .ofCandidates)
+    #expect(testSession.state.displayedText == " 你好")
+    #expect(testSession.state.cursor == " 你好".count)
+
+    guard let targetIndex = testSession.state.candidates.firstIndex(where: { $0.value == "郝" }) else {
+      Issue.record("Expected candidate 郝 for trailing 好 among: \(testSession.state.candidates.map(\.value))")
+      return
+    }
+
+    testSession.candidatePairHighlightChanged(at: targetIndex)
+    #expect(testSession.state.type == .ofCandidates)
+    #expect(testSession.state.displayedText == " 你郝")
+    #expect(testSession.state.displayTextSegments == [" ", "你郝"])
+    #expect(testSession.state.cursor == " 你郝".count)
+    #expect(testHandler.mixedInputSegmentStream.displayTextSegments == [" ", "你好"])
+
+    testSession.candidatePairSelectionConfirmed(at: targetIndex)
+    #expect(testSession.state.type == .ofInputting)
+    #expect(testSession.state.displayedText == " 你郝")
+    #expect(testSession.state.cursor == " 你郝".count)
+    #expect(testHandler.mixedInputSegmentStream.displayTextSegments == [" ", "你郝"])
+    #expect(testHandler.mixedInputSegmentStream.activeRawText.isEmpty)
+    #expect(testHandler.mixedAlphanumericalBuffer.isEmpty)
+
+    testClient.clear()
+    press(dataEnterReturn)
+    #expect(testClient.toString() == " 你郝")
     #expect(testSession.state.type == .ofEmpty)
   }
 }

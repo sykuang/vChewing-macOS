@@ -16,11 +16,11 @@ struct MixedInputRawBufferTests {
     #expect(buffer.displayText == "su")
 
     let commit = buffer.receive("3")
-    #expect(commit == .init(literalPrefix: "", suffix: "su3", phonabet: "ㄋㄧˇ"))
+    #expect(commit == .init(suffix: "su3", phonabet: "ㄋㄧˇ"))
     #expect(buffer.rawBuffer == "su3")
   }
 
-  @Test func asciiPrefixRemainsInValidatorBufferAfterTerminalSuffixMatches() {
+  @Test func rawBufferWalksTriePerKeyWithoutPrefixConfirm() {
     var buffer = MixedInputRawBuffer(parser: .ofDachen)
 
     for key in Array("test su") {
@@ -29,7 +29,7 @@ struct MixedInputRawBufferTests {
 
     #expect(buffer.rawBuffer == "test su")
     let commit = buffer.receive("3")
-    #expect(commit == .init(literalPrefix: "test ", suffix: "su3", phonabet: "ㄋㄧˇ"))
+    #expect(commit == .init(suffix: "su3", phonabet: "ㄋㄧˇ"))
     #expect(buffer.rawBuffer == "test su3")
   }
 
@@ -53,7 +53,7 @@ struct MixedInputRawBufferTests {
     }
     let commit = buffer.receive(" ")
 
-    #expect(commit == .init(literalPrefix: "，", suffix: "5p ", phonabet: "ㄓㄣ"))
+    #expect(commit == .init(suffix: "5p ", phonabet: "ㄓㄣ"))
     #expect(buffer.rawBuffer == "，5p ")
   }
 
@@ -82,9 +82,10 @@ struct MixedInputRawBufferTests {
 
     #expect(buffer.receive("s") == nil)
     #expect(buffer.receive("u") == nil)
-    #expect(buffer.receive("2") == nil)
+    let restartAt2 = buffer.receiveWithTransition("2")
     // `su2` is not a live Dachen syllable path; incremental traversal must not
     // keep pretending the whole suffix is live. It restarts from the current key.
+    #expect(restartAt2 == .restartedFromCurrentKey(commit: nil))
     #expect(buffer.activeTriePrefix?.suffix == "2")
 
     #expect(buffer.receive("k") == nil)
@@ -95,6 +96,23 @@ struct MixedInputRawBufferTests {
     #expect(didBackspace)
     #expect(buffer.rawBuffer == "su2")
     #expect(buffer.activeTriePrefix?.suffix == "2")
+  }
+
+  @Test func deadRestartReportsTransitionForSingleAsciiBeforeDachenSyllable() {
+    var buffer = MixedInputRawBuffer(parser: .ofDachen)
+
+    let yTransition = buffer.receiveWithTransition("Y")
+    #expect(yTransition.commit == nil)
+    #expect(buffer.rawBuffer == "Y")
+    #expect(buffer.receiveWithTransition("5") == .restartedFromCurrentKey(commit: nil))
+    #expect(buffer.activeTriePrefix == .init(suffix: "5", phonabet: "ㄓ", state: .prefix))
+    #expect(buffer.receive(".") == nil)
+    #expect(buffer.receiveWithTransition("6") == .continued(commit: .init(
+      suffix: "5.6",
+      phonabet: "ㄓㄡˊ",
+      startsAfterASCIIAlnum: true,
+      hasWordLikeASCIIPrefixBeforeSuffix: false
+    )))
   }
 
   @Test func findsTonedSuffixForStandaloneZhuyin() {
@@ -125,5 +143,27 @@ struct MixedInputRawBufferTests {
   @Test func dictionaryDerivedSuffixMatcherDoesNotTreatStandaloneO4AsMatch() {
     let match = MixedInputRawBuffer.longestTonedSuffix(in: "o4", parser: .ofDachen)
     #expect(match == nil, "Suffix matcher follows dictionary-derived trie; live composer still handles o4 as ㄟˋ")
+  }
+
+  @Test func dachenTrieDataDoesNotContainBareConsonantFirstToneTerminals() {
+    let trie = ZhuyinKeyTrie.shared(for: .ofDachen)
+    for key in [
+      "1", "q", "a", "z",
+      "2", "w", "s", "x",
+      "e", "d", "c",
+      "r", "f", "v",
+      "5", "t", "g", "b",
+      "y", "h", "n",
+    ] {
+      #expect(trie.state(for: [key, " "]) == .dead)
+    }
+  }
+
+  @Test func dachenTrieStillKeepsRealSyllablesAfterRemovingBareConsonantTerminals() {
+    let trie = ZhuyinKeyTrie.shared(for: .ofDachen)
+
+    #expect(trie.state(for: ["s", "u", "3"]) == .terminal) // ㄋㄧˇ
+    #expect(trie.state(for: ["5", ".", "6"]) == .terminal) // ㄓㄡˊ
+    #expect(trie.state(for: ["8", " "]) == .terminal) // ㄚ
   }
 }

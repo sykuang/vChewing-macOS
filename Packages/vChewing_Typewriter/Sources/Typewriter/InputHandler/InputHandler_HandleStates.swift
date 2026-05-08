@@ -107,10 +107,10 @@ extension InputHandlerProtocol {
        currentTypingMethod == .vChewingFactory {
       var result = State.ofInputting(
         displayTextSegments: mixedInputSegmentStream.displayTextSegments,
-        cursor: mixedInputSegmentStream.displayText.count,
+        cursor: mixedInputSegmentStream.displayCursor(forReadingCursor: assembler.cursor),
         highlightAt: nil
       )
-      result.marker = mixedInputSegmentStream.displayText.count
+      result.marker = mixedInputSegmentStream.displayCursor(forReadingCursor: assembler.marker)
       result.data.rawDisplayTextSegments = mixedInputSegmentStream.displayTextSegments
       if let activeTrieSuffix = mixedInputSegmentStream.activeRawBuffer.activeTriePrefix {
         result.tooltip = activeTrieSuffix.phonabet
@@ -303,6 +303,17 @@ extension InputHandlerProtocol {
     }
     if restoreCursorAfterSelectingCandidate, backupCursor == nil {
       backupCursor = cursorPriorToCandidateSelection
+    }
+    if !mixedInputSegmentStream.isEmpty,
+       prefs.mixedAlphanumericalEnabled,
+       currentTypingMethod == .vChewingFactory {
+      var result = State.ofCandidates(
+        candidates: generateArrayOfCandidates(fixOrder: prefs.useFixedCandidateOrderOnSelection),
+        displayTextSegments: mixedInputSegmentStream.displayTextSegments,
+        cursor: mixedInputSegmentStream.displayCursor(forReadingCursor: assembler.cursor)
+      )
+      result.data.rawDisplayTextSegments = mixedInputSegmentStream.displayTextSegments
+      return result
     }
     var result = State.ofCandidates(
       candidates: generateArrayOfCandidates(fixOrder: prefs.useFixedCandidateOrderOnSelection),
@@ -554,19 +565,7 @@ extension InputHandlerProtocol {
     if prefs.mixedAlphanumericalEnabled,
        currentTypingMethod == .vChewingFactory,
        !mixedInputSegmentStream.isEmpty {
-      // 一併 commit mixed segment stream（中文 + raw）並清空相容欄位。
       let textToCommit = mixedInputSegmentStream.displayText
-      composer.clear()
-      mixedInputRawBuffer.clear()
-      mixedInputSegmentStream.clear(keepingParser: composer.parser)
-      mixedAlphanumericalBuffer.removeAll()
-      session.switchState(State.ofCommitting(textToCommit: textToCommit))
-      return true
-    }
-
-    if prefs.mixedAlphanumericalEnabled, !mixedAlphanumericalBuffer.isEmpty {
-      // Legacy fallback for callers/tests that still seed only mixedAlphanumericalBuffer.
-      let textToCommit = committableDisplayText(sansReading: true)
       composer.clear()
       mixedInputRawBuffer.clear()
       mixedInputSegmentStream.clear(keepingParser: composer.parser)
@@ -616,14 +615,24 @@ extension InputHandlerProtocol {
 
     if currentTypingMethod == .vChewingFactory,
        !mixedInputSegmentStream.isEmpty {
-      _ = mixedInputSegmentStream.backspace()
+      let readingCursorSnapshot = assembler.cursor
+      let shouldPreferActiveRawTail = !mixedInputSegmentStream.activeRawText.isEmpty
+        && readingCursorSnapshot >= mixedInputSegmentStream.readingCount
+      let deletion = mixedInputSegmentStream.backspace(
+        readingCursor: shouldPreferActiveRawTail ? nil : readingCursorSnapshot
+      )
+      if case let .chineseReading(_, _, globalReadingIndex)? = deletion {
+        assembler.cursor = min(globalReadingIndex + 1, assembler.length)
+        _ = dropKey(direction: .rear)
+      }
+      mixedInputSegmentStream.rebuildActiveRawBuffer()
       mixedInputRawBuffer = mixedInputSegmentStream.activeRawBuffer
       mixedAlphanumericalBuffer = mixedInputSegmentStream.activeRawText
       switch isConsideredEmptyForNow {
       case false: session.switchState(generateStateOfInputting())
       case true: session.switchState(State.ofAbortion())
       }
-      return true
+      return deletion != nil
     }
 
     if currentTypingMethod == .vChewingFactory, !mixedAlphanumericalBuffer.isEmpty {
@@ -1246,7 +1255,13 @@ extension InputHandlerProtocol {
     // 僅憑藉 state.hasComposition 的話，並不能真實把握組字器的狀況。
     // 另外，這裡不要用「!input.isFunctionKeyHold」，
     // 否則會導致對上下左右鍵與翻頁鍵的判斷失效。
-    let notEmpty = state.hasComposition && !assembler.isEmpty && isComposerOrCalligrapherEmpty
+    let hasAssemblerComposition = !assembler.isEmpty
+    let hasMixedStreamComposition = !mixedInputSegmentStream.isEmpty
+      && prefs.mixedAlphanumericalEnabled
+      && currentTypingMethod == .vChewingFactory
+    let notEmpty = state.hasComposition
+      && (hasAssemblerComposition || hasMixedStreamComposition)
+      && isComposerOrCalligrapherEmpty
     let bannedModifiers: KBEvent.ModifierFlags = [.option, .shift, .command, .control]
     let noBannedModifiers = bannedModifiers.intersection(input.keyModifierFlags).isEmpty
     var triggered = input.isCursorClockLeft || input.isCursorClockRight

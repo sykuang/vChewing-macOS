@@ -89,7 +89,7 @@ extension InputHandlerProtocol {
           // 中英混打模式：Space 按鍵交由 MixedAlphanumericalTypewriter 處理，
           // 避免直接進入組字區送字邏輯而將讀音字串以原文 commit。
           if currentTypingMethod == .vChewingFactory, prefs.mixedAlphanumericalEnabled,
-             !mixedAlphanumericalBuffer.isEmpty {
+             !mixedInputSegmentStream.isEmpty {
             if let result = MixedAlphanumericalTypewriter(self).handle(input) {
               return result
             }

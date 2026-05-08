@@ -290,6 +290,7 @@ extension SessionProtocol {
       }
     case .ofCandidates where (0 ..< state.candidates.count).contains(index):
       let selectedValue = state.candidates[index]
+      let selectionReadingCursor = inputHandler.assembler.cursor
       inputHandler.consolidateNode(
         candidate: selectedValue,
         respectCursorPushing: true,
@@ -297,8 +298,17 @@ extension SessionProtocol {
         skipObservation: !prefs.fetchSuggestionsFromPerceptionOverrideModel,
         explicitlyChosen: true
       )
+      if prefs.mixedAlphanumericalEnabled,
+         inputHandler.currentTypingMethod == .vChewingFactory,
+         !inputHandler.mixedInputSegmentStream.isEmpty {
+        inputHandler.mixedInputSegmentStream.replaceChineseSegment(
+          containing: selectedValue.keyArray,
+          with: selectedValue.value,
+          readingCursor: selectionReadingCursor
+        )
+      }
+
       var result: State = inputHandler.generateStateOfInputting()
-      defer { switchState(result) } // 這是最終輸出結果。
       if prefs.useSCPCTypingMode {
         switchState(.ofCommitting(textToCommit: inputHandler.committableDisplayText(sansReading: true)))
         // 此時是逐字選字模式，所以「selectedValue.value」是單個字、不用追加處理。
@@ -311,6 +321,7 @@ extension SessionProtocol {
           result = .ofEmpty()
         }
       }
+      defer { switchState(result) } // 這是最終輸出結果。
     case .ofAssociates where (0 ..< state.candidates.count).contains(index):
       let selectedValue = state.candidates[index]
       var result: State = .ofEmpty()

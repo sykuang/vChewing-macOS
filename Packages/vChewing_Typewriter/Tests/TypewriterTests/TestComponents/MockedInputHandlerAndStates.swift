@@ -189,34 +189,7 @@ public final class MockInputHandler: @MainActor InputHandlerProtocol {
 
   public var strCodePointBuffer = ""
   public var calligrapher = ""
-  public var mixedAlphanumericalBuffer = "" {
-    didSet {
-      if mixedAlphanumericalBuffer != mixedInputRawBuffer.rawBuffer {
-        mixedInputRawBuffer = MixedInputRawBuffer(parser: composer.parser)
-        for key in mixedAlphanumericalBuffer.map(\.description) {
-          _ = mixedInputRawBuffer.receive(key)
-        }
-      }
-      if mixedAlphanumericalBuffer.isEmpty {
-        return
-      }
-      guard mixedInputSegmentStream.activeRawText != mixedAlphanumericalBuffer else { return }
-      guard !mixedInputRawBuffer.rawBuffer.isEmpty else { return }
-      let existingRawTexts = mixedInputSegmentStream.rawTextSegments
-      guard existingRawTexts != [mixedAlphanumericalBuffer] else { return }
-      if mixedInputSegmentStream.isEmpty {
-        mixedInputSegmentStream = MixedInputSegmentStream(parser: composer.parser)
-      }
-      var stream = mixedInputSegmentStream
-      if !stream.activeRawText.isEmpty {
-        while !stream.activeRawText.isEmpty { _ = stream.backspace() }
-      }
-      for key in mixedAlphanumericalBuffer.map(\.description) {
-        _ = stream.appendRawKey(key)
-      }
-      mixedInputSegmentStream = stream
-    }
-  }
+  public var mixedAlphanumericalBuffer = ""
   public var mixedInputRawBuffer = MixedInputRawBuffer(parser: .ofDachen)
   public var mixedInputSegmentStream = MixedInputSegmentStream(parser: .ofDachen)
   public var composer: Tekkon.Composer = .init()
@@ -298,7 +271,7 @@ public final class MockSession: @MainActor SessionCoreProtocol, CtlCandidateDele
       } else if next.type == .ofEmpty, previous.hasComposition, let inputHandler {
         // `commit()` 會自行完成 JIS / 康熙轉換。
         let textToCommit = inputHandler.committableDisplayText(
-          sansReading: previous.type != .ofInputting
+          sansReading: previous.type != .ofInputting || previous.isCandidateContainer
         )
         commit(text: textToCommit)
       }
@@ -386,6 +359,7 @@ public final class MockSession: @MainActor SessionCoreProtocol, CtlCandidateDele
       }
     case .ofCandidates where (0 ..< state.candidates.count).contains(index):
       let selectedValue = state.candidates[index]
+      let selectionReadingCursor = inputHandler.assembler.cursor
       inputHandler.consolidateNode(
         candidate: selectedValue,
         respectCursorPushing: true,
@@ -393,6 +367,15 @@ public final class MockSession: @MainActor SessionCoreProtocol, CtlCandidateDele
         skipObservation: !inputHandler.prefs.fetchSuggestionsFromPerceptionOverrideModel,
         explicitlyChosen: true
       )
+      if inputHandler.prefs.mixedAlphanumericalEnabled,
+         inputHandler.currentTypingMethod == .vChewingFactory,
+         !inputHandler.mixedInputSegmentStream.isEmpty {
+        inputHandler.mixedInputSegmentStream.replaceChineseSegment(
+          containing: selectedValue.keyArray,
+          with: selectedValue.value,
+          readingCursor: selectionReadingCursor
+        )
+      }
       var result: State = inputHandler.generateStateOfInputting()
       defer { switchState(result) } // 這是最終輸出結果。
       if inputHandler.prefs.useSCPCTypingMode {
@@ -485,7 +468,9 @@ public final class MockSession: @MainActor SessionCoreProtocol, CtlCandidateDele
       (state.type == .ofInputting)
         && (inputHandler.prefs.trimUnfinishedReadingsOnCommit || forceCleanup)
     if state.hasComposition {
-      textToCommit = inputHandler.committableDisplayText(sansReading: sansReading)
+      textToCommit = inputHandler.committableDisplayText(
+        sansReading: sansReading || state.isCandidateContainer
+      )
     }
     // 唯音不再在這裡對 IMKTextInput 客體黑名單當中的應用做資安措施。
     // 有相關需求者，請在切換掉輸入法或者切換至新的客體應用之前敲一下 Shift+Delete。

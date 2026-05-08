@@ -190,6 +190,28 @@ extension InputHandlerTests {
     #expect(testHandler.committableDisplayText(sansReading: true) == "su2k7")
   }
 
+  /// Single ASCII raw segment followed by a dead-restarted Dachen syllable must split into
+  /// raw("Y") + chinese("軸"), not keep the whole `Y5.6` raw nor scan suffixes afterward.
+  @Test
+  func test_IH405D_MixedAlnumDeadRestartSingleAsciiBeforeZhuyinTail() throws {
+    let (testHandler, testSession) = try prepareMixedModeHandler()
+    let testKanjiData = """
+    ㄓㄡˊ 軸 -1
+    """
+    let cleanup = injectTemporaryGrams(testHandler, testKanjiData)
+    defer { cleanup(); testHandler.clear() }
+
+    typeSentence("Y5.6")
+
+    #expect(testSession.recentCommissions.isEmpty)
+    #expect(testHandler.mixedInputSegmentStream.segments == [
+      .raw("Y"),
+      .chinese(text: "軸", readings: ["ㄓㄡˊ"]),
+    ])
+    #expect(testHandler.mixedAlphanumericalBuffer.isEmpty)
+    #expect(testHandler.committableDisplayText(sansReading: true) == "Y軸")
+  }
+
   /// 英文 prefix 後已有中文節點時，active Trie tail 只應出現在 tooltip；
   /// 藍色 inline 不得再把 composer reading 疊進來形成 `ek整ㄍㄜ` 這類混合怪。
   @Test
@@ -276,7 +298,9 @@ extension InputHandlerTests {
     #expect(testSession.recentCommissions.isEmpty)
     #expect(testHandler.committableDisplayText(sansReading: true) == expectedASCIIPrefix + "你")
     #expect(testHandler.generateStateOfInputting().displayedText == expectedASCIIPrefix + "你")
-    #expect(testHandler.mixedAlphanumericalBuffer == expectedASCIIPrefix)
+    #expect(testHandler.mixedInputSegmentStream.rawTextSegments == [expectedASCIIPrefix])
+    #expect(testHandler.mixedInputSegmentStream.activeRawText.isEmpty)
+    #expect(testHandler.mixedAlphanumericalBuffer.isEmpty)
 
     typeSentence("cl3")
 
@@ -285,10 +309,54 @@ extension InputHandlerTests {
     #expect(composedText == expectedASCIIPrefix + "你好")
     #expect(testHandler.generateStateOfInputting().displayedText == expectedASCIIPrefix + "你好")
     #expect(testSession.recentCommissions.isEmpty)
-    #expect(testHandler.mixedAlphanumericalBuffer == expectedASCIIPrefix)
+    #expect(testHandler.mixedInputSegmentStream.rawTextSegments == [expectedASCIIPrefix])
+    #expect(testHandler.mixedInputSegmentStream.activeRawText.isEmpty)
+    #expect(testHandler.mixedAlphanumericalBuffer.isEmpty)
 
     #expect(testHandler.triageInput(event: KBEvent.KeyEventData.dataEnterReturn.asEvent))
     #expect(testSession.recentCommissions.joined() == expectedASCIIPrefix + "你好")
+  }
+
+
+  /// Candidate selection in a mixed stream must not resurrect a stale raw tail.
+  /// Regression: typing `你好test你`, selecting the trailing `你`, then pressing Enter
+  /// committed `你好test你test` because candidate confirmation restored the pre-selection
+  /// cursor while leaving `mixedAlphanumericalBuffer` stale as `test`; the next inputting
+  /// state appended that stale buffer back into the segment stream.
+  @Test
+  func test_IH433_MixedCandidateSelectionDoesNotResurrectStaleRawTail() throws {
+    let (testHandler, testSession) = try prepareMixedModeHandler()
+    let testKanjiData = """
+    ㄋㄧˇ 你 -1
+    ㄋㄧˇ 妳 -1.5
+    ㄏㄠˇ 好 -1
+    ㄋㄧˇ-ㄏㄠˇ 你好 -2
+    """
+    let cleanup = injectTemporaryGrams(testHandler, testKanjiData)
+    defer { cleanup(); testHandler.clear() }
+
+    typeSentence("su3cl3testsu3")
+
+    #expect(testSession.recentCommissions.isEmpty)
+    #expect(testHandler.mixedInputSegmentStream.displayText == "你好test你")
+    #expect(testHandler.mixedInputSegmentStream.rawTextSegments == ["test"])
+    #expect(testHandler.mixedInputSegmentStream.activeRawText.isEmpty)
+    #expect(testHandler.mixedAlphanumericalBuffer.isEmpty)
+
+    #expect(testHandler.triageInput(event: KBEvent.KeyEventData.dataArrowDown.asEvent))
+    let candidates = testSession.state.candidates.map(\.value)
+    #expect(candidates.contains("妳"))
+    let targetIndex = candidates.firstIndex(of: "妳") ?? 0
+    testSession.candidatePairSelectionConfirmed(at: targetIndex)
+
+    #expect(testHandler.mixedInputSegmentStream.displayText == "你好test妳")
+    #expect(testHandler.mixedInputSegmentStream.rawTextSegments == ["test"])
+    #expect(testHandler.mixedInputSegmentStream.activeRawText.isEmpty)
+    #expect(testHandler.mixedAlphanumericalBuffer.isEmpty)
+    #expect(testSession.state.displayedText == "你好test妳")
+
+    #expect(testHandler.triageInput(event: KBEvent.KeyEventData.dataEnterReturn.asEvent))
+    #expect(testSession.recentCommissions.joined() == "你好test妳")
   }
 
   /// 純注音雙音節在 mixed mode 下用 Space 確認後，
@@ -333,7 +401,9 @@ extension InputHandlerTests {
     typeSentence("su3cl3")
 
     #expect(testSession.recentCommissions.isEmpty)
-    #expect(testHandler.mixedAlphanumericalBuffer == "test")
+    #expect(testHandler.mixedInputSegmentStream.rawTextSegments == ["test"])
+    #expect(testHandler.mixedInputSegmentStream.activeRawText.isEmpty)
+    #expect(testHandler.mixedAlphanumericalBuffer.isEmpty)
     #expect(testHandler.committableDisplayText(sansReading: true) == "你好test你好")
     #expect(testHandler.generateStateOfInputting().displayedText == "你好test你好")
   }
@@ -385,7 +455,8 @@ extension InputHandlerTests {
 
     #expect(testSession.recentCommissions == s.expectedCommissions, "\(s.id) commissions")
     #expect(testHandler.committableDisplayText(sansReading: true) == s.expectedComposedText, "\(s.id) composed")
-    #expect(!testHandler.mixedAlphanumericalBuffer.isEmpty)
+    #expect(testHandler.mixedInputSegmentStream.activeRawText.isEmpty)
+    #expect(testHandler.mixedAlphanumericalBuffer.isEmpty)
 
     if let followUp = s.followUpInput, let expectedAfter = s.expectedComposedTextAfterFollowUp {
       typeSentence(followUp)
@@ -394,7 +465,8 @@ extension InputHandlerTests {
         testHandler.committableDisplayText(sansReading: true) == expectedAfter,
         "\(s.id) composed after follow-up"
       )
-      #expect(!testHandler.mixedAlphanumericalBuffer.isEmpty)
+      #expect(testHandler.mixedInputSegmentStream.activeRawText.isEmpty)
+      #expect(testHandler.mixedAlphanumericalBuffer.isEmpty)
     }
   }
 
@@ -462,6 +534,14 @@ extension InputHandlerTests {
         GramSpec(rawSequence: "su3cl3", value: "你好", score: -2),
       ]
     ),
+    TerminalSuffixBoundaryScenario(
+      id: "IH408G", input: "ru.4",
+      expectedCommissions: [], expectedComposedText: "就",
+      expectedDisplayMustNotContain: "ru.4",
+      gramSpecs: [
+        GramSpec(rawSequence: "ru.4", value: "就", score: 999),
+      ]
+    ),
   ])
   private func test_IH408_MixedTerminalSuffixBoundaryCases(_ s: TerminalSuffixBoundaryScenario) throws {
     let (testHandler, testSession) = try prepareMixedModeHandler()
@@ -487,12 +567,8 @@ extension InputHandlerTests {
     if let mustNotContain = s.expectedDisplayMustNotContain {
       #expect(!currentDisplay.contains(mustNotContain), "\(s.id) should not contain \(mustNotContain)")
     }
-    switch s.id {
-    case "IH408D":
-      #expect(testHandler.mixedAlphanumericalBuffer.isEmpty)
-    default:
-      #expect(!testHandler.mixedAlphanumericalBuffer.isEmpty)
-    }
+    #expect(testHandler.mixedInputSegmentStream.activeRawText.isEmpty)
+    #expect(testHandler.mixedAlphanumericalBuffer.isEmpty)
   }
 
   /// Trie validator must reject short English-looking tails such as `discordu6`.
@@ -524,11 +600,11 @@ extension InputHandlerTests {
   @Test(arguments: [
     SpaceFinalizeTerminalSuffixScenario(
       id: "IH409A", input: "This5j; ",
-      expectedCommissions: ["This"], expectedComposedText: "裝"
+      expectedCommissions: [], expectedComposedText: "This裝"
     ),
     SpaceFinalizeTerminalSuffixScenario(
       id: "IH409B", input: "this5j; ",
-      expectedCommissions: ["this"], expectedComposedText: "裝"
+      expectedCommissions: [], expectedComposedText: "this裝"
     ),
   ])
   private func test_IH409_MixedSpaceFinalizeTerminalSuffix(_ s: SpaceFinalizeTerminalSuffixScenario) throws {
@@ -544,7 +620,6 @@ extension InputHandlerTests {
 
     #expect(testSession.recentCommissions == s.expectedCommissions, "\(s.id) commissions")
     #expect(testHandler.committableDisplayText(sansReading: true) == s.expectedComposedText, "\(s.id) composed")
-    #expect(testHandler.mixedAlphanumericalBuffer.isEmpty)
   }
 
   /// `acceptLeadingIntonations = false` 時，mixed mode 的聲調前置路徑應被封鎖。
@@ -608,34 +683,34 @@ extension InputHandlerTests {
 
   // MARK: Group B2 — Space Finalize: Pure ASCII Word
 
-  private struct SpaceFinalizeASCIIWordScenario: Sendable {
+  private struct SpaceAsRawASCIIScenario: Sendable {
     let id: String
     let inputSequence: [String]
-    let expectedCommission: String
+    let expectedComposition: String
   }
 
   @Test(arguments: [
-    SpaceFinalizeASCIIWordScenario(
-      id: "IH411A", inputSequence: ["tod "], expectedCommission: "tod "
+    SpaceAsRawASCIIScenario(
+      id: "IH411A", inputSequence: ["tod "], expectedComposition: "tod "
     ),
-    SpaceFinalizeASCIIWordScenario(
-      id: "IH411B", inputSequence: ["film "], expectedCommission: "film "
+    SpaceAsRawASCIIScenario(
+      id: "IH411B", inputSequence: ["film "], expectedComposition: "film "
     ),
-    SpaceFinalizeASCIIWordScenario(
-      id: "IH411C", inputSequence: ["What ", "the", " "], expectedCommission: "What the "
+    SpaceAsRawASCIIScenario(
+      id: "IH411C", inputSequence: ["What ", "the", " "], expectedComposition: "What the "
     ),
-    SpaceFinalizeASCIIWordScenario(
-      id: "IH411D", inputSequence: ["What the ", "hell", " "], expectedCommission: "What the hell "
+    SpaceAsRawASCIIScenario(
+      id: "IH411D", inputSequence: ["What the ", "hell", " "], expectedComposition: "What the hell "
     ),
   ])
-  private func test_IH411_MixedSpaceFinalizeASCIIWord(_ s: SpaceFinalizeASCIIWordScenario) throws {
+  private func test_IH411_MixedSpaceStaysInRawASCIIStream(_ s: SpaceAsRawASCIIScenario) throws {
     let (testHandler, testSession) = try prepareMixedModeHandler()
     for step in s.inputSequence {
       typeSentence(step)
     }
-    #expect(testSession.recentCommissions.joined() == s.expectedCommission, "\(s.id) commission")
-    #expect(testHandler.committableDisplayText(sansReading: true).isEmpty, "\(s.id) composer should be empty")
-    #expect(testHandler.mixedAlphanumericalBuffer.isEmpty, "\(s.id) buffer should be empty")
+    #expect(testSession.recentCommissions.isEmpty, "\(s.id) no implicit commission")
+    #expect(testHandler.committableDisplayText(sansReading: true) == s.expectedComposition, "\(s.id) composition")
+    #expect(testHandler.mixedInputSegmentStream.displayText == s.expectedComposition, "\(s.id) stream remains editable")
   }
 
   /// 符號字元在 mixed mode 下應保留可見字面語義。
@@ -1080,6 +1155,745 @@ extension InputHandlerTests {
     let commissioned = testSession.recentCommissions.joined()
     #expect(!commissioned.contains("What/"))
     #expect(commissioned.contains("What?") || commissioned.contains("What？"))
+  }
+
+  /// mixed segment stream 已接管顯示來源時，Down/翻頁等明確候選鍵仍應能進入選字窗；
+  /// 不可因 assembler 為空或 active raw tail 非空而被候選窗入口擋掉。
+  @Test(arguments: [
+    ("IH411A", 125, "\u{F701}"),
+  ])
+  func test_IH411_MixedSegmentStreamArrowKeyCanOpenCandidateWindow(
+    id: String,
+    keyCode: Int,
+    chars: String
+  ) throws {
+    let (testHandler, testSession) = try prepareMixedModeHandler()
+    let testKanjiData = """
+    ㄋㄧˇ 你 -1
+    ㄏㄠˇ 好 -1
+    ㄋㄧˇ-ㄏㄠˇ 你好 -2
+    """
+    let cleanup = injectTemporaryGrams(testHandler, testKanjiData)
+    defer { cleanup(); testHandler.clear() }
+
+    typeSentence("su3cl3test")
+
+    #expect(testSession.state.type == .ofInputting)
+    #expect(testSession.state.displayedText == "你好test")
+    #expect(testHandler.committableDisplayText(sansReading: true) == "你好test")
+    #expect(!testHandler.mixedInputSegmentStream.isEmpty)
+
+    let eventData = KBEvent.KeyEventData(chars: chars, keyCode: UInt16(keyCode))
+    #expect(testHandler.triageInput(event: eventData.asEvent), "\(id) triage")
+    #expect(testSession.state.type == .ofCandidates, "\(id) state")
+    #expect(testSession.state.displayedText == "你好test", "\(id) display")
+  }
+
+  /// mixed stream 內 bare Left/Right 是組字游標移動，不是候選窗入口；
+  /// 游標移動後再用 Down 叫候選窗，應針對游標所在的中文 segment 顯示/選字。
+  @Test
+  func test_IH411B_MixedSegmentStreamBareLeftRightMovesCompositionCursorBeforeCandidateWindow() throws {
+    let (testHandler, testSession) = try prepareMixedModeHandler()
+    let testKanjiData = """
+    ㄋㄧˇ 你 -1
+    ㄋㄧˇ 妳 -2
+    ㄋㄧˇ 擬 -3
+    """
+    let cleanup = injectTemporaryGrams(testHandler, testKanjiData)
+    defer { cleanup(); testHandler.clear() }
+
+    typeSentence("su3testsu3")
+
+    #expect(testSession.state.type == .ofInputting)
+    #expect(testSession.state.displayedText == "你test你")
+    #expect(testHandler.assembler.cursor == 2)
+
+    #expect(testHandler.triageInput(event: KBEvent.KeyEventData.dataArrowLeft.asEvent))
+    #expect(testSession.state.type == .ofInputting)
+    #expect(testHandler.assembler.cursor == 1)
+    #expect(testSession.state.cursor == 1)
+
+    #expect(testHandler.triageInput(event: KBEvent.KeyEventData.dataArrowRight.asEvent))
+    #expect(testSession.state.type == .ofInputting)
+    #expect(testHandler.assembler.cursor == 2)
+    #expect(testSession.state.cursor == "你test你".count)
+
+    #expect(testHandler.triageInput(event: KBEvent.KeyEventData.dataArrowDown.asEvent))
+    #expect(testSession.state.type == .ofCandidates)
+    guard let targetIndex = testSession.state.candidates.firstIndex(where: { $0.value == "妳" }) else {
+      Issue.record("Expected candidate 妳 to exist among: \(testSession.state.candidates.map(\.value))")
+      return
+    }
+    testSession.candidatePairSelectionConfirmed(at: targetIndex)
+
+    #expect(testSession.state.type == .ofInputting)
+    #expect(testSession.state.displayedText == "你test妳")
+    #expect(testHandler.mixedInputSegmentStream.displayTextSegments == ["你", "test", "妳"])
+  }
+
+  /// mixed segment stream 作為顯示 source of truth 時，候選窗選字後也必須只改被選候選的讀音範圍；
+  /// 不可用 Homa retokenized smashedPairs 整段回寫 stream，否則會在「你好test你」這類 raw boundary
+  /// 場景把前段中文依照純 Homa 序列重鋪，造成後綴重複或錯位。
+  @Test
+  func test_IH412_MixedSegmentStreamCandidateSelectionUpdatesOnlySelectedRange() throws {
+    let (testHandler, testSession) = try prepareMixedModeHandler()
+    let testKanjiData = """
+    ㄋㄧˇ 你 -1
+    ㄋㄧˇ 妳 -2
+    ㄋㄧˇ 擬 -3
+    ㄏㄠˇ 好 -1
+    ㄏㄠˇ 郝 -2
+    ㄋㄧˇ-ㄏㄠˇ 你好 -2
+    """
+    let cleanup = injectTemporaryGrams(testHandler, testKanjiData)
+    defer { cleanup(); testHandler.clear() }
+
+    typeSentence("su3cl3testsu3")
+
+    #expect(testSession.state.displayedText == "你好test你")
+    #expect(testHandler.mixedInputSegmentStream.displayTextSegments == ["你好", "test", "你"])
+    #expect(!testHandler.mixedInputSegmentStream.isEmpty)
+
+    testSession.switchState(testHandler.generateStateOfCandidates())
+    let values = testSession.state.candidates.map(\.value)
+    #expect(!values.contains("郝"), "tail cursor must not expose candidate from the prefix Chinese segment: \(values)")
+
+    testHandler.assembler.cursor = 2
+    testSession.switchState(testHandler.generateStateOfCandidates())
+    guard let targetIndex = testSession.state.candidates.firstIndex(where: { $0.value == "郝" }) else {
+      Issue.record("Expected candidate 郝 to exist among: \(testSession.state.candidates.map(\.value))")
+      return
+    }
+
+    testSession.candidatePairSelectionConfirmed(at: targetIndex)
+
+    #expect(testSession.state.type == .ofInputting)
+    #expect(testSession.state.displayedText == "你郝test你")
+    #expect(testHandler.mixedInputSegmentStream.displayTextSegments == ["你郝", "test", "你"])
+    #expect(testHandler.committableDisplayText(sansReading: true) == "你郝test你")
+  }
+
+  /// mixed stream 內若同一讀音出現在 raw boundary 兩側，Left/Right 移動 Homa 游標後
+  /// confirm 必須依游標所在的 Chinese segment 改字；不能永遠替換第一個 matching keyArray。
+  @Test
+  func test_IH412B_MixedSegmentStreamCandidateSelectionRespectsCursorAcrossRawBoundary() throws {
+    let (testHandler, testSession) = try prepareMixedModeHandler()
+    let testKanjiData = """
+    ㄋㄧˇ 你 -1
+    ㄋㄧˇ 妳 -2
+    ㄋㄧˇ 擬 -3
+    """
+    let cleanup = injectTemporaryGrams(testHandler, testKanjiData)
+    defer { cleanup(); testHandler.clear() }
+
+    typeSentence("su3testsu3")
+
+    #expect(testSession.state.displayedText == "你test你")
+    #expect(testHandler.mixedInputSegmentStream.displayTextSegments == ["你", "test", "你"])
+    #expect(!testHandler.mixedInputSegmentStream.isEmpty)
+
+    testHandler.assembler.cursor = 2
+    testSession.switchState(testHandler.generateStateOfCandidates())
+    guard let targetIndex = testSession.state.candidates.firstIndex(where: { $0.value == "妳" }) else {
+      Issue.record("Expected candidate 妳 to exist among: \(testSession.state.candidates.map(\.value))")
+      return
+    }
+
+    testSession.candidatePairSelectionConfirmed(at: targetIndex)
+
+    #expect(testSession.state.type == .ofInputting)
+    #expect(testSession.state.displayedText == "你test妳")
+    #expect(testHandler.mixedInputSegmentStream.displayTextSegments == ["你", "test", "妳"])
+    #expect(testHandler.committableDisplayText(sansReading: true) == "你test妳")
+  }
+
+  @Test
+  func test_IH431_MixedSegmentStreamCandidatePreviewPreservesMiddleRawAfterSingleChinesePrefix() throws {
+    let (testHandler, testSession) = try prepareMixedModeHandler()
+    let testKanjiData = """
+    ㄏㄠˇ 好 -1
+    ㄋㄧˇ 你 -1
+    ㄋㄧˇ 妳 -2
+    ㄏㄠˇ-ㄋㄧˇ 好你 -2
+    """
+    let cleanup = injectTemporaryGrams(testHandler, testKanjiData)
+    defer { cleanup(); testHandler.clear() }
+
+    typeSentence("cl3testsu3")
+
+    #expect(testSession.state.type == .ofInputting)
+    #expect(testSession.state.displayedText == "好test你")
+    #expect(testHandler.mixedInputSegmentStream.displayTextSegments == ["好", "test", "你"])
+    #expect(testHandler.assembler.cursor == 2)
+
+    testSession.switchState(testHandler.generateStateOfCandidates())
+    #expect(testSession.state.type == .ofCandidates)
+    #expect(testSession.state.displayedText == "好test你")
+    #expect(testSession.state.displayTextSegments == ["好", "test", "你"])
+    #expect(testSession.state.cursor == "好test你".count)
+
+    guard let initialIndex = testSession.state.candidates.firstIndex(where: { $0.value == "你" }) else {
+      Issue.record("Expected candidate 你 to exist among: \(testSession.state.candidates.map(\.value))")
+      return
+    }
+    testSession.candidatePairHighlightChanged(at: initialIndex)
+
+    #expect(testSession.state.type == .ofCandidates)
+    #expect(testSession.state.displayedText == "好test你")
+    #expect(testSession.state.displayTextSegments == ["好", "test", "你"])
+    #expect(testSession.state.cursor == "好test你".count)
+
+    testSession.state.highlightedCandidateIndex = nil
+    guard let targetIndex = testSession.state.candidates.firstIndex(where: { $0.value == "妳" }) else {
+      Issue.record("Expected candidate 妳 to exist among: \(testSession.state.candidates.map(\.value))")
+      return
+    }
+    testSession.candidatePairHighlightChanged(at: targetIndex)
+
+    #expect(testSession.state.type == .ofCandidates)
+    #expect(testSession.state.displayedText == "好test妳")
+    #expect(testSession.state.displayTextSegments == ["好", "test", "妳"])
+    #expect(testSession.state.cursor == "好test妳".count)
+    #expect(testHandler.mixedInputSegmentStream.displayTextSegments == ["好", "test", "你"])
+  }
+
+  @Test
+  func test_IH432_MixedSegmentStreamCandidateAbortCommitsMiddleRawAfterPreview() throws {
+    let (testHandler, testSession) = try prepareMixedModeHandler()
+    let testKanjiData = """
+    ㄋㄧˇ 你 -1
+    ㄏㄠˇ 好 -1
+    ㄏㄠˇ 郝 -2
+    ㄋㄧˇ-ㄏㄠˇ 你好 -2
+    """
+    let cleanup = injectTemporaryGrams(testHandler, testKanjiData)
+    defer { cleanup(); testHandler.clear() }
+
+    typeSentence("su3cl3testcl3")
+
+    #expect(testSession.state.type == .ofInputting)
+    #expect(testSession.state.displayedText == "你好test好")
+    #expect(testHandler.mixedInputSegmentStream.displayTextSegments == ["你好", "test", "好"])
+
+    testSession.switchState(testHandler.generateStateOfCandidates())
+    #expect(testSession.state.type == .ofCandidates)
+    #expect(testSession.state.displayedText == "你好test好")
+
+    guard let targetIndex = testSession.state.candidates.firstIndex(where: { $0.value == "郝" }) else {
+      Issue.record("Expected candidate 郝 to exist among: \(testSession.state.candidates.map(\.value))")
+      return
+    }
+    testSession.candidatePairHighlightChanged(at: targetIndex)
+
+    #expect(testSession.state.type == .ofCandidates)
+    #expect(testSession.state.displayedText == "你好test郝")
+    #expect(testHandler.mixedInputSegmentStream.displayTextSegments == ["你好", "test", "好"])
+
+    testSession.switchState(.ofEmpty())
+
+    #expect(testSession.recentCommissions.joined() == "你好test好")
+    #expect(testSession.state.type == .ofEmpty)
+  }
+
+  /// `你好test好` 是皇上實機回報的 mixed boundary 選字案例：
+  /// 游標在尾端中文、前面隔著 raw segment 時，Down 應能開候選窗、選到尾端 `好` 的候選，
+  /// confirm 後不可跳回 raw boundary，也不可把 `test` 重複復活。
+  @Test
+  func test_IH435_MixedStackBufferCanSelectTrailingChineseAfterMiddleRaw() throws {
+    let (testHandler, testSession) = try prepareMixedModeHandler()
+    let testKanjiData = """
+    ㄋㄧˇ 你 -1
+    ㄏㄠˇ 好 -1
+    ㄏㄠˇ 郝 -2
+    ㄋㄧˇ-ㄏㄠˇ 你好 -2
+    """
+    let cleanup = injectTemporaryGrams(testHandler, testKanjiData)
+    defer { cleanup(); testHandler.clear() }
+
+    typeSentence("su3cl3testcl3")
+
+    #expect(testSession.recentCommissions.isEmpty)
+    #expect(testSession.state.type == .ofInputting)
+    #expect(testSession.state.displayedText == "你好test好")
+    #expect(testSession.state.cursor == "你好test好".count)
+    #expect(testHandler.assembler.cursor == testHandler.mixedInputSegmentStream.readingCount)
+    #expect(testHandler.mixedInputSegmentStream.displayTextSegments == ["你好", "test", "好"])
+    #expect(testHandler.mixedInputSegmentStream.activeRawText.isEmpty)
+    #expect(testHandler.mixedAlphanumericalBuffer.isEmpty)
+
+    #expect(testHandler.triageInput(event: KBEvent.KeyEventData.dataArrowDown.asEvent))
+    #expect(testSession.state.type == .ofCandidates)
+    #expect(testSession.state.displayedText == "你好test好")
+    #expect(testSession.state.cursor == "你好test好".count)
+
+    guard let targetIndex = testSession.state.candidates.firstIndex(where: { $0.value == "郝" }) else {
+      Issue.record("Expected candidate 郝 for trailing 好 among: \(testSession.state.candidates.map(\.value))")
+      return
+    }
+
+    testSession.candidatePairHighlightChanged(at: targetIndex)
+    #expect(testSession.state.type == .ofCandidates)
+    #expect(testSession.state.displayedText == "你好test郝")
+    #expect(testSession.state.displayTextSegments == ["你好", "test", "郝"])
+    #expect(testSession.state.cursor == "你好test郝".count)
+    #expect(testHandler.mixedInputSegmentStream.displayTextSegments == ["你好", "test", "好"])
+
+    testSession.candidatePairSelectionConfirmed(at: targetIndex)
+    #expect(testSession.state.type == .ofInputting)
+    #expect(testSession.state.displayedText == "你好test郝")
+    #expect(testSession.state.cursor == "你好test郝".count)
+    #expect(testHandler.mixedInputSegmentStream.displayTextSegments == ["你好", "test", "郝"])
+    #expect(testHandler.mixedInputSegmentStream.activeRawText.isEmpty)
+    #expect(testHandler.mixedAlphanumericalBuffer.isEmpty)
+
+    #expect(testHandler.triageInput(event: KBEvent.KeyEventData.dataEnterReturn.asEvent))
+    #expect(testSession.recentCommissions.joined() == "你好test郝")
+  }
+
+  /// 皇上實機回報：長 buffer 到「後由標」附近時，視覺上對著「標」叫選字，
+  /// 候選內容不可漂移到前面的「由」或「後由」。此測試刻意把「標」與「由」
+  /// 的候選做成可辨識語義，並從尾端用 Left 移到「標」後方再開候選窗。
+  @Test
+  func test_IH436_LongMixedBufferCandidateAnchorStaysOnBiaoInsteadOfYou() throws {
+    let (testHandler, testSession) = try prepareMixedModeHandler()
+    let testKanjiData = """
+    ㄉㄠˋ 到 -1
+    ㄧˊ 一 -1
+    ㄉㄧㄥˋ 定 -1
+    ㄕㄨˋ 數 -1
+    ㄌㄧㄤˋ 量 -1
+    ㄏㄡˋ 後 -1
+    ㄧㄡˊ 由 -1
+    ㄧㄡˊ 油 -2
+    ㄅㄧㄠ 標 -1
+    ㄅㄧㄠ 錶 -2
+    ㄐㄧㄡˋ 就 -1
+    ㄘㄨㄛˋ 錯 -1
+    ㄌㄜ˙ 了 -1
+    ㄋㄜ˙ 呢 -1
+    ㄏㄡˋ-ㄧㄡˊ 後由 -3
+    """
+    let cleanup = injectTemporaryGrams(testHandler, testKanjiData)
+    defer { cleanup(); testHandler.clear() }
+
+    let readings = [
+      "ㄉㄠˋ", "ㄧˊ", "ㄉㄧㄥˋ", "ㄕㄨˋ", "ㄌㄧㄤˋ", "ㄏㄡˋ", "ㄧㄡˊ", "ㄅㄧㄠ",
+      "ㄐㄧㄡˋ", "ㄘㄨㄛˋ", "ㄌㄜ˙", "ㄋㄜ˙",
+    ]
+    for key in readings {
+      #expect(throws: Never.self) { try testHandler.assembler.insertKey(key) }
+    }
+    testHandler.mixedInputSegmentStream.appendChinese(
+      text: "到一定數量後由標就錯了呢",
+      readings: readings
+    )
+    testHandler.mixedInputRawBuffer = testHandler.mixedInputSegmentStream.activeRawBuffer
+    testHandler.mixedAlphanumericalBuffer = testHandler.mixedInputSegmentStream.activeRawText
+    testSession.switchState(testHandler.generateStateOfInputting())
+
+    #expect(testSession.state.displayedText == "到一定數量後由標就錯了呢")
+    #expect(testHandler.assembler.cursor == readings.count)
+    #expect(testSession.state.cursor == "到一定數量後由標就錯了呢".count)
+
+    for _ in 0 ..< 4 {
+      #expect(testHandler.triageInput(event: KBEvent.KeyEventData.dataArrowLeft.asEvent))
+    }
+    #expect(testHandler.assembler.cursor == 8)
+    #expect(testSession.state.type == .ofInputting)
+    #expect(testSession.state.cursor == "到一定數量後由標".count)
+
+    #expect(testHandler.triageInput(event: KBEvent.KeyEventData.dataArrowDown.asEvent))
+    #expect(testSession.state.type == .ofCandidates)
+    #expect(testSession.state.displayedText == "到一定數量後由標就錯了呢")
+    #expect(testSession.state.cursor == "到一定數量後由標".count)
+
+    let candidates = testSession.state.candidates
+    let values = candidates.map(\.value)
+    let keyArrays = candidates.map(\.keyArray)
+    #expect(values.contains("錶"), "候選窗應針對『標/ㄅㄧㄠ』，實際候選：\(candidates)")
+    #expect(keyArrays.allSatisfy { $0 == ["ㄅㄧㄠ"] }, "候選 anchor 不可漂移到『由』或『後由』：\(candidates)")
+    #expect(!values.contains("油"), "候選窗漂移到『由/ㄧㄡˊ』：\(candidates)")
+    #expect(!values.contains("後由"), "候選窗跨到『後由/ㄏㄡˋ-ㄧㄡˊ』：\(candidates)")
+  }
+
+  @Test
+  func test_IH430_MixedSegmentStreamCandidatePreviewPreservesRawBoundaryDisplay() throws {
+    let (testHandler, testSession) = try prepareMixedModeHandler()
+    let testKanjiData = """
+    ㄋㄧˇ 你 -1
+    ㄋㄧˇ 妳 -2
+    ㄏㄠˇ 好 -1
+    ㄋㄧˇ-ㄏㄠˇ 你好 -2
+    ㄋㄧˇ-ㄏㄠˇ 旎好 -3
+    """
+    let cleanup = injectTemporaryGrams(testHandler, testKanjiData)
+    defer { cleanup(); testHandler.clear() }
+
+    typeSentence("su3testsu3cl3")
+
+    #expect(testSession.state.type == .ofInputting)
+    #expect(testSession.state.displayedText == "你test你好")
+    #expect(testHandler.mixedInputSegmentStream.displayTextSegments == ["你", "test", "你好"])
+    #expect(testHandler.assembler.cursor == 3)
+
+    testSession.switchState(testHandler.generateStateOfCandidates())
+    #expect(testSession.state.type == .ofCandidates)
+    #expect(testSession.state.displayedText == "你test你好")
+    #expect(testSession.state.displayTextSegments == ["你", "test", "你好"])
+    #expect(testSession.state.cursor == "你test你好".count)
+
+    guard let targetIndex = testSession.state.candidates.firstIndex(where: { $0.value == "旎好" }) else {
+      Issue.record("Expected candidate 旎好 to exist among: \(testSession.state.candidates.map(\.value))")
+      return
+    }
+    testSession.candidatePairHighlightChanged(at: targetIndex)
+
+    #expect(testSession.state.type == .ofCandidates)
+    #expect(testSession.state.displayedText == "你test旎好")
+    #expect(testSession.state.displayTextSegments == ["你", "test", "旎好"])
+    #expect(testSession.state.cursor == "你test旎好".count)
+    #expect(testHandler.mixedInputSegmentStream.displayTextSegments == ["你", "test", "你好"])
+  }
+
+  @Test
+  func test_IH429_MixedSegmentStreamInputtingCursorStaysAfterActiveRawTail() throws {
+    let (testHandler, testSession) = try prepareMixedModeHandler()
+    let testKanjiData = """
+    ㄋㄧˇ 你 -1
+    ㄏㄠˇ 好 -1
+    ㄋㄧˇ-ㄏㄠˇ 你好 -2
+    """
+    let cleanup = injectTemporaryGrams(testHandler, testKanjiData)
+    defer { cleanup(); testHandler.clear() }
+
+    typeSentence("su3cl3test")
+
+    #expect(testSession.state.type == .ofInputting)
+    #expect(testSession.state.displayedText == "你好test")
+    #expect(testHandler.assembler.cursor == testHandler.mixedInputSegmentStream.readingCount)
+    #expect(testHandler.mixedInputSegmentStream.activeRawText == "test")
+    #expect(testSession.state.cursor == "你好test".count)
+    #expect(testHandler.generateStateOfInputting().cursor == "你好test".count)
+  }
+
+  /// mixed segment stream 的 raw segment 是硬邊界；`你test你` 進候選窗時，不可把前後兩個 `你`
+  /// 合併成同一個雙音節候選（例如候選列出 `倪倪`/`薿薿`），否則選字會一次改掉兩邊。
+  @Test
+  func test_IH413_MixedSegmentStreamCandidateListDoesNotCrossRawSegmentBoundary() throws {
+    let (testHandler, testSession) = try prepareMixedModeHandler()
+    let testKanjiData = """
+    ㄋㄧˇ 你 -1
+    ㄋㄧˇ 妳 -2
+    ㄋㄧˇ 擬 -3
+    ㄋㄧˇ-ㄋㄧˇ 倪倪 -4
+    ㄋㄧˇ-ㄋㄧˇ 薿薿 -5
+    """
+    let cleanup = injectTemporaryGrams(testHandler, testKanjiData)
+    defer { cleanup(); testHandler.clear() }
+
+    typeSentence("su3testsu3")
+
+    #expect(testSession.state.displayedText == "你test你")
+    #expect(testHandler.mixedInputSegmentStream.displayTextSegments == ["你", "test", "你"])
+
+    testSession.switchState(testHandler.generateStateOfCandidates())
+    #expect(testSession.state.type == .ofCandidates)
+
+    let values = testSession.state.candidates.map(\.value)
+    #expect(values.contains("妳") || values.contains("擬"))
+    #expect(!values.contains("倪倪"))
+    #expect(!values.contains("薿薿"))
+    #expect(values.allSatisfy { $0.count <= 1 }, "Candidate list crossed raw segment boundary: \(values)")
+  }
+
+  /// 含 active raw reading + 已提交 mixed Chinese 時，Enter 不可把 raw tail 當裸注音一起提交。
+  /// Regression: live 顯示 `ㄋㄋㄟㄋㄟ你` 後 Enter，曾把 `ㄋㄋㄟㄋㄟ` 連同 `你` 一起提交。
+  @Test
+  func test_IH438_MixedEnterWithIncompleteReadingAndChineseSegmentCommitsOnlyStreamText() throws {
+    let (testHandler, testSession) = try prepareMixedModeHandler()
+    defer { testHandler.clear() }
+
+    let testKanjiData = """
+    ㄋㄧˇ 你 -1
+    ㄋㄟ-ㄋㄟ ㄋㄟㄋㄟ -1
+    """
+    let cleanup = injectTemporaryGrams(testHandler, testKanjiData)
+    defer { cleanup() }
+
+    typeSentence("su3ssoo")
+
+    #expect(testSession.recentCommissions.isEmpty)
+    #expect(testHandler.mixedInputSegmentStream.segments == [
+      .chinese(text: "你", readings: ["ㄋㄧˇ"]),
+      .raw("ssoo"),
+    ])
+    #expect(testSession.state.displayedText == "你ssoo")
+    #expect(testHandler.assembler.length == 1)
+    #expect(testHandler.assembler.cursor == 1)
+    #expect(testHandler.triageInput(event: KBEvent.KeyEventData.dataEnterReturn.asEvent))
+    #expect(testSession.recentCommissions.joined() == "你ssoo")
+  }
+
+  /// leading raw Space + Chinese 的 Backspace 不可把 stream/Homa 拆成殘留注音 tooltip。
+  /// Regression: live `" 你好"` 後按 Backspace，畫面殘留 `ㄋ|`，代表 stream 刪字與 assembler / cursor sync 分裂。
+  @Test
+  func test_IH437_MixedLeadingSpaceBackspaceKeepsChineseSegmentSynced() throws {
+    let (testHandler, testSession) = try prepareMixedModeHandler()
+    defer { testHandler.clear() }
+
+    let testKanjiData = """
+    ㄋㄧˇ 你 -1
+    ㄏㄠˇ 好 -1
+    ㄋㄧˇ-ㄏㄠˇ 你好 -2
+    """
+    let cleanup = injectTemporaryGrams(testHandler, testKanjiData)
+    defer { cleanup() }
+
+    typeSentence(" su3cl3")
+
+    #expect(testSession.recentCommissions.isEmpty)
+    #expect(testHandler.mixedInputSegmentStream.segments == [
+      .raw(" "),
+      .chinese(text: "你好", readings: ["ㄋㄧˇ", "ㄏㄠˇ"]),
+    ])
+    #expect(testSession.state.displayedText == " 你好")
+    #expect(testSession.state.tooltip.isEmpty)
+
+    #expect(testHandler.triageInput(event: KBEvent.KeyEventData.backspace.asEvent))
+
+    #expect(testSession.recentCommissions.isEmpty)
+    #expect(testHandler.mixedInputSegmentStream.segments == [
+      .raw(" "),
+      .chinese(text: "你", readings: ["ㄋㄧˇ"]),
+    ])
+    #expect(testHandler.mixedAlphanumericalBuffer.isEmpty)
+    #expect(testHandler.mixedInputRawBuffer.rawBuffer.isEmpty)
+    #expect(testHandler.assembler.length == 1)
+    #expect(testHandler.assembler.cursor == 1)
+    #expect(testSession.state.displayedText == " 你")
+    #expect(testSession.state.tooltip.isEmpty)
+  }
+
+  /// 已有中文 + raw tail，Backspace 刪空 raw tail 後再輸入中文，應回到相鄰 Chinese segment 合併；
+  /// 不可留下 `[chinese("你好"), chinese("好")]` 這種未正規化 stack。
+  @Test
+  func test_IH426_MixedBackspaceClearsRawTailThenNextChineseMergesWithPreviousChineseSegment() throws {
+    let (testHandler, testSession) = try prepareMixedModeHandler()
+    defer { testHandler.clear() }
+
+    let testKanjiData = """
+    ㄋㄧˇ 你 -1
+    ㄏㄠˇ 好 -1
+    ㄋㄧˇ-ㄏㄠˇ 你好 -2
+    """
+    let cleanup = injectTemporaryGrams(testHandler, testKanjiData)
+    defer { cleanup() }
+
+    typeSentence("su3cl3test")
+    #expect(testHandler.mixedInputSegmentStream.segments == [
+      .chinese(text: "你好", readings: ["ㄋㄧˇ", "ㄏㄠˇ"]),
+      .raw("test"),
+    ])
+    #expect(testHandler.committableDisplayText(sansReading: true) == "你好test")
+
+    for _ in 0 ..< 4 {
+      #expect(testHandler.triageInput(event: KBEvent.KeyEventData.backspace.asEvent))
+    }
+
+    #expect(testSession.recentCommissions.isEmpty)
+    #expect(testHandler.mixedInputSegmentStream.segments == [
+      .chinese(text: "你好", readings: ["ㄋㄧˇ", "ㄏㄠˇ"]),
+    ])
+    #expect(testHandler.mixedAlphanumericalBuffer.isEmpty)
+    #expect(testHandler.committableDisplayText(sansReading: true) == "你好")
+
+    typeSentence("cl3")
+
+    #expect(testSession.recentCommissions.isEmpty)
+    #expect(testHandler.mixedInputSegmentStream.segments == [
+      .chinese(text: "你好好", readings: ["ㄋㄧˇ", "ㄏㄠˇ", "ㄏㄠˇ"]),
+    ])
+    #expect(testHandler.committableDisplayText(sansReading: true) == "你好好")
+    #expect(testHandler.generateStateOfInputting().displayedText == "你好好")
+  }
+
+  /// mixed stream 刪除尾端中文時，Backspace 不只要改 stream，也要同步 Homa assembler；
+  /// 否則畫面看似刪掉尾字，下一次 terminal suffix commit / candidate 會讀到 stale reading cursor。
+  @Test
+  func test_IH427_MixedBackspaceDeletingChineseTailSyncsAssemblerBeforeNextInput() throws {
+    let (testHandler, testSession) = try prepareMixedModeHandler()
+    defer { testHandler.clear() }
+
+    let testKanjiData = """
+    ㄋㄧˇ 你 -1
+    ㄏㄠˇ 好 -1
+    ㄋㄧˇ-ㄏㄠˇ 你好 -2
+    """
+    let cleanup = injectTemporaryGrams(testHandler, testKanjiData)
+    defer { cleanup() }
+
+    typeSentence("su3cl3testsu3")
+    #expect(testHandler.mixedInputSegmentStream.segments == [
+      .chinese(text: "你好", readings: ["ㄋㄧˇ", "ㄏㄠˇ"]),
+      .raw("test"),
+      .chinese(text: "你", readings: ["ㄋㄧˇ"]),
+    ])
+    #expect(testHandler.committableDisplayText(sansReading: true) == "你好test你")
+
+    #expect(testHandler.triageInput(event: KBEvent.KeyEventData.backspace.asEvent))
+
+    #expect(testSession.recentCommissions.isEmpty)
+    #expect(testHandler.mixedInputSegmentStream.segments == [
+      .chinese(text: "你好", readings: ["ㄋㄧˇ", "ㄏㄠˇ"]),
+      .raw("test"),
+    ])
+    #expect(testHandler.committableDisplayText(sansReading: true) == "你好test")
+
+    typeSentence("cl3")
+
+    #expect(testSession.recentCommissions.isEmpty)
+    #expect(testHandler.mixedInputSegmentStream.segments == [
+      .chinese(text: "你好", readings: ["ㄋㄧˇ", "ㄏㄠˇ"]),
+      .raw("test"),
+      .chinese(text: "好", readings: ["ㄏㄠˇ"]),
+    ])
+    #expect(testHandler.committableDisplayText(sansReading: true) == "你好test好")
+    #expect(testHandler.assembler.length == 3)
+  }
+
+  /// 游標移到 mixed stream 中間時，Backspace 應刪除游標前一個 Chinese reading，
+  /// 不可忽略 cursor 而刪掉尾端 segment。
+  @Test
+  func test_IH428_MixedBackspaceRespectsReadingCursorInsideChineseSegments() throws {
+    let (testHandler, testSession) = try prepareMixedModeHandler()
+    defer { testHandler.clear() }
+
+    let testKanjiData = """
+    ㄋㄧˇ 你 -1
+    ㄏㄠˇ 好 -1
+    ㄋㄧˇ-ㄏㄠˇ 你好 -2
+    """
+    let cleanup = injectTemporaryGrams(testHandler, testKanjiData)
+    defer { cleanup() }
+
+    typeSentence("su3cl3testsu3")
+    #expect(testHandler.committableDisplayText(sansReading: true) == "你好test你")
+
+    testHandler.assembler.cursor = 2
+    testSession.switchState(testHandler.generateStateOfInputting())
+    #expect(testSession.state.cursor == 2)
+
+    #expect(testHandler.triageInput(event: KBEvent.KeyEventData.backspace.asEvent))
+
+    #expect(testSession.recentCommissions.isEmpty)
+    #expect(testHandler.mixedInputSegmentStream.segments == [
+      .chinese(text: "你", readings: ["ㄋㄧˇ"]),
+      .raw("test"),
+      .chinese(text: "你", readings: ["ㄋㄧˇ"]),
+    ])
+    #expect(testHandler.committableDisplayText(sansReading: true) == "你test你")
+    #expect(testHandler.assembler.length == 2)
+  }
+
+  /// raw→中文的 terminal suffix match 必須是 stack tail pop/replace：
+  /// `[中文("你好"), raw("testsu3")] -> [中文("你好"), raw("test"), 中文("你")]`。
+  /// 尾端 raw 被替換後，compat buffer 不得回填成上一個 raw segment，否則 Enter/commit 會把 `test` 再輸出一次。
+  @Test
+  func test_IH414_MixedTerminalSuffixCommitPopsOnlyTailRawAndDoesNotDuplicateRawOnEnter() throws {
+    let (testHandler, testSession) = try prepareMixedModeHandler()
+    let testKanjiData = """
+    ㄋㄧˇ 你 -1
+    ㄏㄠˇ 好 -1
+    ㄋㄧˇ-ㄏㄠˇ 你好 -2
+    """
+    let cleanup = injectTemporaryGrams(testHandler, testKanjiData)
+    defer { cleanup(); testHandler.clear() }
+
+    typeSentence("su3cl3testsu3")
+
+    #expect(testSession.state.displayedText == "你好test你")
+    #expect(testHandler.mixedInputSegmentStream.displayTextSegments == ["你好", "test", "你"])
+    #expect(testHandler.mixedInputSegmentStream.rawTextSegments == ["test"])
+    #expect(testHandler.mixedInputSegmentStream.activeRawText.isEmpty)
+    #expect(testHandler.mixedAlphanumericalBuffer.isEmpty)
+    #expect(testHandler.committableDisplayText(sansReading: true) == "你好test你")
+
+    #expect(testHandler.triageInput(event: KBEvent.KeyEventData.dataEnterReturn.asEvent))
+    #expect(testSession.recentCommissions.joined() == "你好test你")
+    #expect(testHandler.mixedInputSegmentStream.isEmpty)
+    #expect(testHandler.mixedAlphanumericalBuffer.isEmpty)
+  }
+
+  /// Space 是大千一聲鍵；mixed mode normal typing 不可把 Space 當 finalize commit。
+  /// Regression: after raw tail has already been converted to Chinese, `mixedAlphanumericalBuffer`
+  /// is empty while `mixedInputSegmentStream` still contains composition. Space must still route to
+  /// MixedAlphanumericalTypewriter instead of legacy Space commit path.
+  @Test
+  func test_IH425_MixedSpaceToneDoesNotCommitSegmentStream() throws {
+    let (testHandler, testSession) = try prepareMixedModeHandler()
+    let testKanjiData = """
+    ㄓ 之 -1
+    ㄋㄧˇ 你 -1
+    """
+    let cleanup = injectTemporaryGrams(testHandler, testKanjiData)
+    defer { cleanup(); testHandler.clear() }
+
+    typeSentence("5")
+    #expect(testHandler.triageInput(event: KBEvent.KeyEventData(chars: " ", keyCode: KeyCode.kSpace.rawValue).asEvent))
+    #expect(testSession.recentCommissions.isEmpty)
+    #expect(testHandler.mixedInputSegmentStream.displayText == "之")
+    #expect(testHandler.generateStateOfInputting().displayedText == "之")
+
+    typeSentence("su3")
+    #expect(testSession.recentCommissions.isEmpty)
+    #expect(testHandler.mixedInputSegmentStream.displayText == "之你")
+    #expect(testHandler.mixedAlphanumericalBuffer.isEmpty)
+
+    #expect(testHandler.triageInput(event: KBEvent.KeyEventData(chars: " ", keyCode: KeyCode.kSpace.rawValue).asEvent))
+    #expect(testSession.recentCommissions.isEmpty)
+    #expect(testHandler.mixedInputSegmentStream.displayText == "之你 ")
+    #expect(testHandler.generateStateOfInputting().displayedText == "之你 ")
+  }
+
+  @Test
+  func test_IH434_MixedCandidatePreviewDoesNotDuplicateRawBoundaryTail() throws {
+    let (testHandler, testSession) = try prepareMixedModeHandler()
+    let testKanjiData = """
+    ㄋㄢˊ 南 -1
+    ㄋㄢˊ 難 -0.5
+    ㄕㄥ 生 -1
+    ㄅㄧˋ 必 -1
+    ㄇㄞˇ 買 -1
+    """
+    let cleanup = injectTemporaryGrams(testHandler, testKanjiData)
+    defer { cleanup(); testHandler.clear() }
+
+    typeSentence("themall")
+    #expect(testHandler.mixedInputSegmentStream.displayText == "themall")
+    #expect(testHandler.mixedAlphanumericalBuffer == "themall")
+
+    for key in ["ㄋㄢˊ", "ㄕㄥ", "ㄅㄧˋ", "ㄇㄞˇ"] {
+      #expect(throws: Never.self) { try testHandler.assembler.insertKey(key) }
+    }
+    testHandler.mixedInputSegmentStream.appendChinese(
+      text: "南生必買",
+      readings: ["ㄋㄢˊ", "ㄕㄥ", "ㄅㄧˋ", "ㄇㄞˇ"]
+    )
+    testHandler.mixedInputRawBuffer = testHandler.mixedInputSegmentStream.activeRawBuffer
+    testHandler.mixedAlphanumericalBuffer = testHandler.mixedInputSegmentStream.activeRawText
+    testHandler.assembler.cursor = 1
+    testSession.switchState(testHandler.generateStateOfCandidates(dodge: false))
+
+    guard let nanIndex = testSession.state.candidates.firstIndex(where: { $0.value == "難" }) else {
+      Issue.record("候選窗應包含單字『難』以重現 preview 路徑。")
+      return
+    }
+
+    testSession.candidatePairHighlightChanged(at: nanIndex)
+
+    #expect(testSession.state.displayedText == "themall難生必買")
+    #expect(!testSession.state.displayedText.hasSuffix("themall"))
+    #expect(testHandler.mixedInputSegmentStream.displayText == "themall南生必買")
   }
 
   // MARK: - Fileprivate Helpers.

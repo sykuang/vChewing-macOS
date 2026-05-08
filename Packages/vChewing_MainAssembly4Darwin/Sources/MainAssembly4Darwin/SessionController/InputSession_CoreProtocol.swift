@@ -144,9 +144,12 @@ extension SessionProtocol {
       (state.type == .ofInputting)
         && (prefs.trimUnfinishedReadingsOnCommit || forceCleanup)
     if state.hasComposition {
-      textToCommit = inputHandler.committableDisplayText(sansReading: sansReading)
+      textToCommit = inputHandler.committableDisplayText(
+        sansReading: sansReading || state.isCandidateContainer
+      )
     }
-    if !inputHandler.mixedAlphanumericalBuffer.isEmpty {
+    if inputHandler.mixedInputSegmentStream.isEmpty,
+       !inputHandler.mixedAlphanumericalBuffer.isEmpty {
       textToCommit += inputHandler.mixedAlphanumericalBuffer
     }
     // 唯音不再在這裡對 IMKTextInput 客體黑名單當中的應用做資安措施。

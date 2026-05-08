@@ -255,9 +255,20 @@ final class InputHandlerTests {
         guard readingsToKeep.contains(cells[0].description) else { return }
       }
       let readingChainPinyin = cells[0]
-      let readingArray: [String] = Tekkon.cnvHanyuPinyinToPhona(
-        targetJoined: readingChainPinyin.description
-      ).split(separator: "-").map(\.description)
+      let readingArray: [String]
+      if readingChainPinyin.contains("ㄅ") || readingChainPinyin.contains("ㄆ") || readingChainPinyin.contains("ㄇ")
+        || readingChainPinyin.contains("ㄈ") || readingChainPinyin.contains("ㄉ") || readingChainPinyin.contains("ㄊ")
+        || readingChainPinyin.contains("ㄋ") || readingChainPinyin.contains("ㄌ") || readingChainPinyin.contains("ㄍ")
+        || readingChainPinyin.contains("ㄎ") || readingChainPinyin.contains("ㄏ") || readingChainPinyin.contains("ㄐ")
+        || readingChainPinyin.contains("ㄑ") || readingChainPinyin.contains("ㄒ") || readingChainPinyin.contains("ㄓ")
+        || readingChainPinyin.contains("ㄔ") || readingChainPinyin.contains("ㄕ") || readingChainPinyin.contains("ㄖ")
+        || readingChainPinyin.contains("ㄗ") || readingChainPinyin.contains("ㄘ") || readingChainPinyin.contains("ㄙ") {
+        readingArray = readingChainPinyin.description.split(separator: "-").map(\.description)
+      } else {
+        readingArray = Tekkon.cnvHanyuPinyinToPhona(
+          targetJoined: readingChainPinyin.description
+        ).split(separator: "-").map(\.description)
+      }
       let cellScoreStr = cells[2].description
       guard let cellScore = Double(cellScoreStr) else { return }
       let unigram = Homa.Gram(

@@ -40,8 +40,10 @@ extension SessionProtocol {
         commit(text: next.textToCommit)
       } else if next.type == .ofEmpty, previous.hasComposition, let inputHandler {
         // `commit()` 會自行完成 JIS / 康熙轉換。
+        // 候選狀態可能只是在 preview inline 上顯示高亮候選；真正要送出的仍是
+        // mixedInputSegmentStream / assembler 的未確認本文，不可把 reading/raw tail 再追加一次。
         let textToCommit = inputHandler.committableDisplayText(
-          sansReading: previous.type != .ofInputting
+          sansReading: previous.type != .ofInputting || previous.isCandidateContainer
         )
         commit(text: textToCommit)
       }

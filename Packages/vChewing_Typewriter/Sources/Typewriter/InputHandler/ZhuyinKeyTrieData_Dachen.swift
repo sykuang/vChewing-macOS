@@ -1,5 +1,5 @@
 // Auto-generated Dachen Zhuyin key sequence data from vChewing dictionary.
-// 1672 terminal sequences (actual readings with tones).
+// 1651 terminal sequences (actual readings with tones).
 // Do not edit manually. Regenerate with TrieDataGenTests.
 // Each line is a complete key sequence (including tone key).
 
@@ -19,7 +19,6 @@ extension ZhuyinKeyTrie {
 03
 04
 06
-1␠
 1,␠
 1/␠
 1/3
@@ -95,7 +94,6 @@ extension ZhuyinKeyTrie {
 1ul4
 1up␠
 1up4
-2␠
 2,␠
 2.␠
 2.3
@@ -181,7 +179,6 @@ extension ZhuyinKeyTrie {
 2ul3
 2ul4
 2ul7
-5␠
 5.␠
 5.3
 5.4
@@ -271,7 +268,6 @@ extension ZhuyinKeyTrie {
 ;3
 ;4
 ;6
-a␠
 a,␠
 a.3
 a.6
@@ -347,7 +343,6 @@ aul4
 aul6
 aup3
 aup6
-b␠
 b.3
 b.4
 b.6
@@ -388,7 +383,6 @@ bp3
 bp4
 bp6
 bp7
-c␠
 c,␠
 c.␠
 c.3
@@ -480,7 +474,6 @@ cp7
 cu␠
 cu8␠
 cui␠
-d␠
 d,␠
 d.␠
 d.3
@@ -552,7 +545,6 @@ du.␠
 du8␠
 du;␠
 dui␠
-e␠
 e,␠
 e.␠
 e.3
@@ -634,7 +626,6 @@ eu8␠
 eui␠
 eul6
 eup␠
-f␠
 fm␠
 fm,␠
 fm,4
@@ -695,7 +686,6 @@ fup␠
 fup3
 fup4
 fup6
-g␠
 g.␠
 g.3
 g.4
@@ -770,7 +760,6 @@ gp3
 gp4
 gp6
 gp7
-h␠
 h.4
 h/␠
 h/4
@@ -901,7 +890,6 @@ mp␠
 mp3
 mp4
 mp6
-n␠
 n,␠
 n.␠
 n.3
@@ -963,7 +951,6 @@ o␠
 p␠
 p4
 p7
-q␠
 q,␠
 q.␠
 q.3
@@ -1034,7 +1021,6 @@ qup␠
 qup3
 qup4
 qup6
-r␠
 rm␠
 rm,␠
 rm,3
@@ -1093,7 +1079,6 @@ rup␠
 rup3
 rup4
 rup7
-s␠
 s,␠
 s.4
 s.6
@@ -1178,7 +1163,6 @@ sul3
 sul4
 sup3
 sup6
-t␠
 t.␠
 t.3
 t.4
@@ -1308,7 +1292,6 @@ up␠
 up3
 up4
 up6
-v␠
 vm␠
 vm,␠
 vm,3
@@ -1375,7 +1358,6 @@ vup3
 vup4
 vup6
 vup7
-w␠
 w,␠
 w.␠
 w.3
@@ -1463,7 +1445,6 @@ wul3
 wul4
 wul6
 wul7
-x␠
 x,␠
 x.␠
 x.3
@@ -1577,7 +1558,6 @@ xup␠
 xup3
 xup4
 xup6
-y␠
 y,␠
 y.␠
 y.3
@@ -1637,7 +1617,6 @@ yo6
 yp␠
 yp3
 yp4
-z␠
 z.3
 z.6
 z/␠
