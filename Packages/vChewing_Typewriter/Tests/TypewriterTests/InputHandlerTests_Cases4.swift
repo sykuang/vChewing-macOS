@@ -175,21 +175,6 @@ extension InputHandlerTests {
     #expect(testSession.state.tooltip == "ㄋㄧ")
   }
 
-  /// Mixed alnum tail ending in a two-key syllable must not peel a tiny terminal suffix.
-  /// `su2k7` should stay raw instead of peeling `k7` into LM candidate `爹`.
-  @Test
-  func test_IH405D_MixedAlnumTailDoesNotPeelTinyK7Suffix() throws {
-    let (testHandler, testSession) = try prepareMixedModeHandler()
-    let cleanup = injectTemporaryGrams(testHandler, "ㄜ˙ 爹 -1")
-    defer { cleanup(); testHandler.clear() }
-
-    typeSentence("su2k7")
-
-    #expect(testSession.recentCommissions.isEmpty)
-    #expect(testHandler.mixedAlphanumericalBuffer == "su2k7")
-    #expect(testHandler.committableDisplayText(sansReading: true) == "su2k7")
-  }
-
   /// Single ASCII raw segment followed by a dead-restarted Dachen syllable must split into
   /// raw("Y") + chinese("軸"), not keep the whole `Y5.6` raw nor scan suffixes afterward.
   @Test
@@ -210,6 +195,28 @@ extension InputHandlerTests {
     ])
     #expect(testHandler.mixedAlphanumericalBuffer.isEmpty)
     #expect(testHandler.committableDisplayText(sansReading: true) == "Y軸")
+  }
+
+  /// Repeated ASCII key followed by a valid Zhuyin tail should be resolved by
+  /// active-suffix replacement, not by any ASCII-prefix workaround policy.
+  @Test
+  func test_IH405D_MixedAlnumRepeatedAsciiThenZhuyinTailUsesActiveSuffix() throws {
+    let (testHandler, testSession) = try prepareMixedModeHandler()
+    let testKanjiData = """
+    ㄌㄧㄠˇ 了 -1
+    """
+    let cleanup = injectTemporaryGrams(testHandler, testKanjiData)
+    defer { cleanup(); testHandler.clear() }
+
+    typeSentence("xxul3")
+
+    #expect(testSession.recentCommissions.isEmpty)
+    #expect(testHandler.mixedInputSegmentStream.segments == [
+      .raw("x"),
+      .chinese(text: "了", readings: ["ㄌㄧㄠˇ"]),
+    ])
+    #expect(testHandler.mixedAlphanumericalBuffer.isEmpty)
+    #expect(testHandler.committableDisplayText(sansReading: true) == "x了")
   }
 
   /// 英文 prefix 後已有中文節點時，active Trie tail 只應出現在 tooltip；

@@ -837,23 +837,55 @@ extension InputHandlerProtocol {
   )
     -> [(String, Homa.Gram)] {
     var arrResult = [(String, Homa.Gram)]()
+    func pomDebugLog(_ message: @autoclosure () -> String) {
+      guard UserDefaults.current.bool(forKey: "_DebugMode") else { return }
+      vCLog(message())
+    }
+    func pomDebugGrams(_ grams: [Homa.GramInPath]) -> String {
+      grams.map { gram in
+        "\(gram.joinedCurrentKey(by: assembler.separator))=\(gram.value)"
+      }.joined(separator: "|")
+    }
+    func pomDebugCandidate(
+      _ candidate: (keyArray: [String], value: String, probability: Double, previous: String?)
+    )
+      -> String {
+      let key = candidate.keyArray.joined(separator: assembler.separator)
+      let previous = candidate.previous ?? "nil"
+      return "key=\(key), value=\(candidate.value), score=\(candidate.probability), previous=\(previous)"
+    }
     /// 如果逐字選字模式有啟用的話，直接放棄執行這個函式。
-    if prefs.useSCPCTypingMode { return arrResult }
+    if prefs.useSCPCTypingMode {
+      pomDebugLog("POM: Retrieve skipped. reason=UseSCPCTypingMode, apply=\(apply)")
+      return arrResult
+    }
     /// 如果這個開關沒打開的話，直接放棄執行這個函式。
-    if !prefs.fetchSuggestionsFromPerceptionOverrideModel { return arrResult }
+    if !prefs.fetchSuggestionsFromPerceptionOverrideModel {
+      pomDebugLog("POM: Retrieve skipped. reason=FetchSuggestionsFromPerceptionOverrideModelDisabled, apply=\(apply)")
+      return arrResult
+    }
     let queryAssembledSentence: [Homa.GramInPath]
     let queryCursor: Int
     let globalCursorOffset: Int
+    let querySource: String
     if let mixedInputReadBufferOverride {
-      guard !mixedInputReadBufferOverride.assembledSentence.isEmpty else { return arrResult }
+      guard !mixedInputReadBufferOverride.assembledSentence.isEmpty else {
+        pomDebugLog("POM: Retrieve skipped. reason=EmptyMixedInputReadBufferOverride, apply=\(apply)")
+        return arrResult
+      }
       queryAssembledSentence = mixedInputReadBufferOverride.assembledSentence
       queryCursor = mixedInputReadBufferOverride.cursor
       globalCursorOffset = mixedInputReadBufferOverride.globalReadingStart
+      querySource = "mixedLastChineseSegment"
     } else {
       queryAssembledSentence = assembler.assembledSentence
       queryCursor = actualNodeCursorPosition
       globalCursorOffset = 0
+      querySource = "assembler"
     }
+    pomDebugLog(
+      "POM: Retrieve begin. apply=\(apply), source=\(querySource), cursor=\(queryCursor), globalOffset=\(globalCursorOffset), nodes=\(pomDebugGrams(queryAssembledSentence))"
+    )
     /// 獲取來自漸退記憶模組的建議結果
     let suggestion = currentLM.fetchPOMSuggestion(
       assembledResult: queryAssembledSentence,
@@ -864,6 +896,14 @@ extension InputHandlerProtocol {
     // 若建議的分數比當前候選的最高權重還低，則忽略以避免覆寫。
     let rawCandidates = rawCandidates ?? fetchRawQueriedCandidatesFromAssembler()
     let appendables = filterPOMAppendables(from: suggestion, rawCandidates: rawCandidates)
+    pomDebugLog(
+      "POM: Retrieve result. candidates=\(suggestion.candidates.count), appendables=\(appendables.count), rawCandidates=\(rawCandidates.count), scenario=\(suggestion.scenario?.rawValue ?? "nil"), forceHSO=\(suggestion.forceHighScoreOverride), overrideCursor=\(suggestion.overrideCursor.map(String.init) ?? "nil")"
+    )
+    if !suggestion.candidates.isEmpty {
+      pomDebugLog(
+        "POM: Retrieve candidates. newest={\(pomDebugCandidate(suggestion.candidates.last!))}"
+      )
+    }
     arrResult.append(contentsOf: appendables)
     if apply {
       if !suggestion.isEmpty, let newestSuggestedCandidate = suggestion.candidates.last {
@@ -871,6 +911,9 @@ extension InputHandlerProtocol {
           ? .withSpecified
           : .withTopGramScore
         let cursorForOverride = (suggestion.overrideCursor ?? queryCursor) + globalCursorOffset
+        pomDebugLog(
+          "POM: Apply attempt. cursor=\(cursorForOverride), behavior=\(overrideBehavior), candidate={\(pomDebugCandidate(newestSuggestedCandidate))}"
+        )
         if let gramHit = assembler.assembledSentence.findGram(at: cursorForOverride) {
           if gramHit.gram.keyArray.count > newestSuggestedCandidate.keyArray.count {
             // 若建議會將現有節點縮短（short->long 替換），要求建議的分數
@@ -879,9 +922,14 @@ extension InputHandlerProtocol {
             let suggestedScore = newestSuggestedCandidate.probability
             // 預設門檻：需要至少超越既有節點 0.5 分（可視為安全餘量）
             if !pomShortToLongAllowed(existingScore: existingScore, suggestedScore: suggestedScore) {
+              pomDebugLog(
+                "POM: Apply rejected. reason=ShortToLongMargin, existingScore=\(existingScore), suggestedScore=\(suggestedScore), existingValue=\(gramHit.gram.value), suggestedValue=\(newestSuggestedCandidate.value)"
+              )
               return arrResult.stableSort { $0.1.probability > $1.1.probability }
             }
           }
+        } else {
+          pomDebugLog("POM: Apply warning. reason=NoGramAtCursor, cursor=\(cursorForOverride)")
         }
         // POM 建議的 keyArray 僅含 head reading（可能與實際候選的完整 keyArray 不符），
         // 因此一律使用 literal override（不查 keyArray）讓 Homa 按 value 搜尋重疊節點。
@@ -891,10 +939,15 @@ extension InputHandlerProtocol {
           overrideType: overrideBehavior,
           enforceRetokenization: true
         )) != nil
+        pomDebugLog(
+          "POM: Apply result. applied=\(applied), candidate=\(newestSuggestedCandidate.value), mixedStreamEmpty=\(mixedInputSegmentStream.isEmpty)"
+        )
         if applied {
           didApply?()
           syncMixedInputSegmentStreamChineseSegmentsFromAssembler()
         }
+      } else {
+        pomDebugLog("POM: Apply skipped. reason=EmptySuggestion")
       }
     }
     arrResult = arrResult.stableSort { $0.1.probability > $1.1.probability }

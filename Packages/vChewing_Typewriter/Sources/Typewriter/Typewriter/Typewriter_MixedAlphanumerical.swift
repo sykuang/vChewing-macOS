@@ -269,11 +269,9 @@ public struct MixedAlphanumericalTypewriter<Handler: InputHandlerProtocol>: Type
     if shouldVetoTerminalCommitForCompletedEnglishToken(rawText: rawBuffer.rawBuffer) { return nil }
     if rawBuffer.rawBuffer.count > 1, rawBuffer.rawBuffer != suffixText {
       guard rawBuffer.currentTerminalContinuationState != .terminal else { return nil }
-      guard !terminalCommit.startsAfterASCIIAlnum || terminalCommit.hasWordLikeASCIIPrefixBeforeSuffix else { return nil }
     }
     guard handler.prefs.acceptLeadingIntonations || !terminalCommit.suffixIsLeadingIntonation else { return nil }
     return buildTerminalSuffixCandidate(
-      prefixText: "",
       suffixText: suffixText
     )
   }
@@ -285,36 +283,14 @@ public struct MixedAlphanumericalTypewriter<Handler: InputHandlerProtocol>: Type
     return EnglishWordLexicon.bundled.containsExactToken(completedToken)
   }
 
-  private func buildTerminalSuffixCandidate(
-    prefixText: String,
-    suffixText: String
-  ) -> TerminalSuffixCandidate? {
-    let prefixHasASCIIAlnum = prefixText.range(of: "[A-Za-z0-9]", options: .regularExpression) != nil
-
-    if prefixText.isEmpty,
-       !handler.prefs.acceptLeadingIntonations,
+  private func buildTerminalSuffixCandidate(suffixText: String) -> TerminalSuffixCandidate? {
+    if !handler.prefs.acceptLeadingIntonations,
        suffixText.first.map({ String($0) }).map({ firstChar in
          var firstKeyTest = handler.composer
          firstKeyTest.clear()
          firstKeyTest.receiveKey(fromString: firstChar)
          return firstKeyTest.hasIntonation(withNothingElse: true)
        }) == true {
-      return nil
-    }
-
-    let suffixStartsWithASCIIDigit = suffixText.unicodeScalars.first.map {
-      $0.isASCII && CharacterSet.decimalDigits.contains($0)
-    } ?? false
-    let suffixStartsWithASCIIPunctuation = suffixText.first?.description.range(
-      of: "^[!\"#$%&'()*+,\\\\-./:;<=>?@[\\\\\\\\\\]^_`{|}~]$",
-      options: .regularExpression
-    ) != nil
-
-    if isASCIIAlnumPrefix(prefixText), suffixStartsWithASCIIDigit, !isWordLikeASCIIPrefix(prefixText) {
-      return nil
-    }
-
-    if prefixHasASCIIAlnum, suffixStartsWithASCIIPunctuation {
       return nil
     }
 
@@ -351,7 +327,7 @@ public struct MixedAlphanumericalTypewriter<Handler: InputHandlerProtocol>: Type
     }
 
     return .init(
-      prefixText: prefixText,
+      prefixText: "",
       suffixText: suffixText,
       readingKey: readingKey,
       candidateText: bestCandidateText(for: readingKey)
@@ -376,49 +352,6 @@ public struct MixedAlphanumericalTypewriter<Handler: InputHandlerProtocol>: Type
           handler.currentLM.hasUnigramsForFast(keyArray: [readingKey])
     else { return nil }
     return readingKey
-  }
-
-  private func isWordLikeASCIIPrefix(_ text: String) -> Bool {
-    text.range(of: "^[A-Za-z]{3,}[A-Za-z0-9]*$", options: .regularExpression) != nil
-  }
-
-  private func isASCIIAlnumPrefix(_ text: String) -> Bool {
-    text.range(of: "^[A-Za-z0-9]+$", options: .regularExpression) != nil
-  }
-
-  private func shouldPreferASCIIWordPath(fullInput: String, minimumOverwriteCount: Int = 2) -> Bool {
-    guard fullInput.count >= 3,
-          fullInput.range(of: "^[A-Za-z]+$", options: .regularExpression) != nil
-    else {
-      return false
-    }
-
-    var trialComposer = handler.composer
-    trialComposer.clear()
-    var destructiveOverwriteCount = 0
-
-    for currentChar in fullInput {
-      let beforeSlots = composerSlotValues(of: trialComposer)
-      trialComposer.receiveKey(fromString: currentChar.description)
-      let afterSlots = composerSlotValues(of: trialComposer)
-
-      if isNonAdvancingSlotConsumption(from: beforeSlots, to: afterSlots) {
-        destructiveOverwriteCount += 1
-      }
-    }
-
-    return destructiveOverwriteCount >= minimumOverwriteCount
-  }
-
-  private func composerSlotValues(of composer: Tekkon.Composer) -> [String] {
-    [composer.consonant.value, composer.semivowel.value, composer.vowel.value, composer.intonation.value]
-  }
-
-  private func isNonAdvancingSlotConsumption(from beforeSlots: [String], to afterSlots: [String]) -> Bool {
-    let beforeOccupiedSlotCount = beforeSlots.filter { !$0.isEmpty }.count
-    let afterOccupiedSlotCount = afterSlots.filter { !$0.isEmpty }.count
-    guard beforeOccupiedSlotCount > 0 else { return false }
-    return afterOccupiedSlotCount <= beforeOccupiedSlotCount
   }
 
   private func resolveVisibleInputText(_ input: some InputSignalProtocol) -> String {

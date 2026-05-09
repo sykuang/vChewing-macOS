@@ -51,7 +51,7 @@
 					<string>Han</string>
 				</array>
 				<key>tsInputModeIsVisibleKey</key>
-				<true/>
+				<false/>
 				<key>tsInputModeMenuIconFileKey</key>
 				<string>MenuIcon-SCVIM.png</string>
 				<key>tsInputModePaletteIconFileKey</key>
@@ -94,7 +94,6 @@
 		<key>tsVisibleInputModeOrderedArrayKey</key>
 		<array>
 			<string>org.atelierInmu.inputmethod.vChewing.IMECHT</string>
-			<string>org.atelierInmu.inputmethod.vChewing.IMECHS</string>
 		</array>
 	</dict>
 	<key>InputMethodConnectionName</key>

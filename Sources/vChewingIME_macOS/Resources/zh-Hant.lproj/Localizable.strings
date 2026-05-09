@@ -511,3 +511,8 @@
 "You're currently using vChewing %@ (%@), a new version %@ (%@) is now available. Do you want to visit vChewing's website to download the version?" = "目前使用的唯音官方版本是 %1$@ (%2$@)，網路上有更新版本 %3$@ (%4$@) 可供下載。是否要前往唯音網站下載新版來安裝？";
 "zh-Hans" = "簡體中文";
 "zh-Hant" = "繁體中文";
+
+"i18n:UserDef.kPrimaryOutputScript.description" = "系統輸入來源列表只保留單一 vChewing 入口；在此指定該入口輸出繁體或簡體中文。";
+"i18n:UserDef.kPrimaryOutputScript.option.simplified" = "簡體中文";
+"i18n:UserDef.kPrimaryOutputScript.option.traditional" = "繁體中文";
+"i18n:UserDef.kPrimaryOutputScript.shortTitle" = "主要輸出字體:";

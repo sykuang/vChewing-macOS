@@ -24,6 +24,7 @@ nonisolated public enum UserDef: String, CaseIterable, Identifiable, Sendable {
   case kCheckAbusersOfSecureEventInputAPI = "CheckAbusersOfSecureEventInputAPI"
   case kDeltaOfCalendarYears = "DeltaOfCalendarYears"
   case kMostRecentInputMode = "MostRecentInputMode"
+  case kPrimaryOutputScript = "PrimaryOutputScript"
   case kCassettePath = "CassettePath"
   case kUserDataFolderSpecified = "UserDataFolderSpecified"
   case kCheckUpdateAutomatically = "CheckUpdateAutomatically"
@@ -366,6 +367,8 @@ nonisolated public enum UserDef: String, CaseIterable, Identifiable, Sendable {
       if ![0, 1, 2, 3, 4].contains(value) { return "Must be 0..4" }
     case .kReadingNarrationCoverage:
       if ![0, 1, 2].contains(value) { return "Must be 0, 1, or 2" }
+    case .kPrimaryOutputScript:
+      if ![0, 1].contains(value) { return "Must be 0 or 1" }
     case .kRomanNumeralOutputFormat:
       if ![0, 1, 2, 3].contains(value) { return "Must be 0..3" }
     case .kSpecifyCmdOptCtrlEnterBehavior:
@@ -426,6 +429,7 @@ nonisolated extension UserDef {
     case .kCheckAbusersOfSecureEventInputAPI: return .bool(true)
     case .kDeltaOfCalendarYears: return .integer(-2_000)
     case .kMostRecentInputMode: return .string("")
+    case .kPrimaryOutputScript: return .integer(0)
     case .kCassettePath: return .string("")
     case .kUserDataFolderSpecified: return .string("")
     case .kCheckUpdateAutomatically: return .bool(false)
@@ -563,6 +567,15 @@ nonisolated extension UserDef {
       )
     case .kDeltaOfCalendarYears: return nil
     case .kMostRecentInputMode: return nil
+    case .kPrimaryOutputScript: return .init(
+        userDef: self,
+        shortTitle: "i18n:UserDef.kPrimaryOutputScript.shortTitle",
+        description: "i18n:UserDef.kPrimaryOutputScript.description",
+        options: [
+          0: "i18n:UserDef.kPrimaryOutputScript.option.traditional",
+          1: "i18n:UserDef.kPrimaryOutputScript.option.simplified",
+        ]
+      )
     case .kCassettePath: return .init(
         userDef: self, shortTitle: "Cassette file path",
         description: "i18n:settings.Prompt.ChooseDesiredCassetteFilePath"

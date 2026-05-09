@@ -511,3 +511,8 @@
 "zh-Hans" = "簡體中国語";
 "zh-Hant" = "繁體中国語";
 // MARK: - DevZone JSON Preferences Exchange
+
+"i18n:UserDef.kPrimaryOutputScript.description" = "システム設定の入力ソース一覧には単一の vChewing 入口だけを表示し、この設定で繁体字または簡体字の出力を選びます。";
+"i18n:UserDef.kPrimaryOutputScript.option.simplified" = "簡体中国語";
+"i18n:UserDef.kPrimaryOutputScript.option.traditional" = "繁体中国語";
+"i18n:UserDef.kPrimaryOutputScript.shortTitle" = "主な出力字体:";

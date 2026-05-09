@@ -65,6 +65,9 @@ public struct VwrSettingsPaneGeneral: View {
       // MARK: (header: Text("Typing Settings:"))
 
       Section {
+        UserDef.kPrimaryOutputScript.renderUI {
+          InputSession.current?.applyPrimaryOutputScript()
+        }
         UserDef.kReadingNarrationCoverage.renderUI {
           SpeechSputnik.shared.refreshStatus()
         }

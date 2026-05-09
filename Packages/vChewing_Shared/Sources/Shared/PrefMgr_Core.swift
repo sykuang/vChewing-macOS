@@ -63,6 +63,9 @@ public final class PrefMgr: PrefMgrProtocol, Sendable {
   @AppProperty(userDef: .kMostRecentInputMode)
   public var mostRecentInputMode: String
 
+  @AppProperty(userDef: .kPrimaryOutputScript)
+  public var primaryOutputScript: Int
+
   @AppProperty(userDef: .kCheckUpdateAutomatically)
   public var checkUpdateAutomatically: Bool
 

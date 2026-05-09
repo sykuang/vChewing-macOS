@@ -189,6 +189,27 @@ extension SessionProtocol {
     client.selectMode(nowMode.reversed.rawValue)
   }
 
+  /// Applies the unified output-script preference by switching the IMK sub-mode.
+  /// IMECHS may be hidden from the system input-source list; `selectMode(_:)` still works
+  /// because it changes IMK's internal mode for the current client.
+  public func applyPrimaryOutputScript() {
+    guard let client: IMKTextInput = client() else { return }
+    let target: Shared.InputMode = prefs.primaryOutputScript == 1 ? .imeModeCHS : .imeModeCHT
+    let currentMode = inputMode != .imeModeNULL ? inputMode : IMEApp.currentInputMode
+    guard currentMode != target else { return }
+
+    if #unavailable(macOS 12) {
+      for neta in TISInputSource.allRegisteredInstancesOfThisInputMethod
+        where neta.identifier == target.rawValue {
+        if !neta.isActivated { neta.activate() }
+        break
+      }
+    }
+
+    client.selectMode(target.rawValue)
+    prefs.mostRecentInputMode = target.rawValue
+  }
+
   /// 所有建構子都會執行的共用部分，在 super.init() 之後執行。
   public func construct(client theClient: IMKTextInput? = nil) {
     // AsyncOnMain 自身的 Lambda Expression 可能與 Swift 6.2 的 Concurrency 相性不太好。
@@ -213,6 +234,7 @@ extension SessionProtocol {
     }
     // GCD 會觸發 didSet，所以不用擔心。
     inputMode = .init(rawValue: prefs.mostRecentInputMode) ?? .imeModeNULL
+    applyPrimaryOutputScript()
   }
 
   @discardableResult
@@ -285,6 +307,7 @@ extension SessionProtocol {
         inputMode = resolvedInputMode
       }
       state = .ofEmpty()
+      applyPrimaryOutputScript()
       setKeyLayout()
       return
     }
@@ -336,6 +359,7 @@ extension SessionProtocol {
     // 這裡不需要 setValue()，因為 IMK 會在自動呼叫 activateServer() 之後自動執行 setValue()。
     this.initInputHandler()
     this.synchronizer4LMPrefs?()
+    this.applyPrimaryOutputScript()
     let shiftKeyDetector = this.ui?.shiftKeyUpChecker
     if let shiftKeyDetector {
       shiftKeyDetector.toggleWithLShift =

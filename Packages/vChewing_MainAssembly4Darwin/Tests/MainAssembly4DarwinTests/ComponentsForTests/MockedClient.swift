@@ -13,6 +13,7 @@ nonisolated final class FakeClient: NSObject, IMKTextInput {
   var selectedRangeStored: NSRange = .notFound
   var markedRangeStored: NSRange = .notFound
   var markedText: NSAttributedString = .init(string: "")
+  var selectedModeIdentifier: String?
 
   var cursor = 0 {
     didSet {
@@ -95,7 +96,7 @@ nonisolated final class FakeClient: NSObject, IMKTextInput {
   }
 
   func selectMode(_ modeIdentifier: String!) {
-    _ = modeIdentifier
+    selectedModeIdentifier = modeIdentifier
   }
 
   func supportsUnicode() -> Bool {

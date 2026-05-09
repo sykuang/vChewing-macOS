@@ -8,6 +8,8 @@
 
 import Foundation
 
+private final class TypewriterBundleFinder {}
+
 // MARK: - EnglishWordLexicon
 
 /// Exact-match English word lexicon for mixed-input boundary protection.
@@ -69,18 +71,39 @@ public struct EnglishWordLexicon: Sendable {
   }
 
   private init(contentsOfBundledDictionary _: Void) {
-    guard let url = Bundle.module.url(forResource: "index", withExtension: "dic")
-      ?? Bundle.module.url(
-        forResource: "index",
-        withExtension: "dic",
-        subdirectory: "EnglishDictionaries/wooorm-dictionaries-en"
-      ),
-      let text = try? String(contentsOf: url, encoding: .utf8)
+    guard let url = Self.bundledDictionaryURL(),
+          let text = try? String(contentsOf: url, encoding: .utf8)
     else {
       self.init(words: [])
       return
     }
     self.init(hunspellDictionaryText: text)
+  }
+
+  private static func bundledDictionaryURL() -> URL? {
+    let bundleName = "Typewriter_Typewriter"
+    let resourcePath = "EnglishDictionaries/wooorm-dictionaries-en"
+    let finderBundle = Bundle(for: TypewriterBundleFinder.self)
+    let candidates: [URL?] = [
+      // Installed .app: SwiftPM resource bundles are copied to Contents/Resources/.
+      Bundle.main.resourceURL,
+      // Framework/test embedding.
+      finderBundle.resourceURL,
+      finderBundle.bundleURL.deletingLastPathComponent(),
+      // SwiftPM command-line/test build directory fallbacks.
+      Bundle.main.bundleURL,
+      Bundle.main.bundleURL.deletingLastPathComponent(),
+    ]
+    for candidate in candidates {
+      guard let bundleURL = candidate?.appendingPathComponent(bundleName + ".bundle"),
+            let bundle = Bundle(url: bundleURL) else { continue }
+      if let url = bundle.url(forResource: "index", withExtension: "dic")
+        ?? bundle.url(forResource: "index", withExtension: "dic", subdirectory: resourcePath)
+      {
+        return url
+      }
+    }
+    return nil
   }
 
   private static func normalizedToken(_ token: String) -> String? {

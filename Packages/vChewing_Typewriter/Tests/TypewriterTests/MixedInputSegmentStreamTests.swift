@@ -46,6 +46,12 @@ struct MixedInputSegmentStreamTests {
       expectedSegments: [.raw("Y"), .chinese(text: "軸", readings: ["ㄓㄡˊ"])],
       expectedDisplayText: "Y軸"
     ),
+    Scenario(
+      input: "xxul3",
+      conversions: ["xul3": ("了", ["ㄌㄧㄠˇ"])],
+      expectedSegments: [.raw("x"), .chinese(text: "了", readings: ["ㄌㄧㄠˇ"])],
+      expectedDisplayText: "x了"
+    ),
   ])
   func arbitraryInputIsRepresentedAsTrieRawSegmentStream(_ scenario: Scenario) {
     var stream = MixedInputSegmentStream(parser: .ofDachen)

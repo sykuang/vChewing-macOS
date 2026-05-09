@@ -44,19 +44,13 @@ public struct MixedInputRawBuffer: Sendable {
   public struct Commit: Equatable, Sendable {
     public let suffix: String
     public let phonabet: String
-    public let startsAfterASCIIAlnum: Bool
-    public let hasWordLikeASCIIPrefixBeforeSuffix: Bool
 
     public init(
       suffix: String,
-      phonabet: String,
-      startsAfterASCIIAlnum: Bool = false,
-      hasWordLikeASCIIPrefixBeforeSuffix: Bool = false
+      phonabet: String
     ) {
       self.suffix = suffix
       self.phonabet = phonabet
-      self.startsAfterASCIIAlnum = startsAfterASCIIAlnum
-      self.hasWordLikeASCIIPrefixBeforeSuffix = hasWordLikeASCIIPrefixBeforeSuffix
     }
 
     public var suffixIsLeadingIntonation: Bool {
@@ -230,23 +224,9 @@ public struct MixedInputRawBuffer: Sendable {
     guard chars.indices.contains(activeSuffixStart) else { return nil }
     let suffix = String(chars[activeSuffixStart...])
     let phonabet = frame.activePhonabet
-    let startsAfterASCIIAlnum: Bool
-    if activeSuffixStart > 0 {
-      let previous = chars[chars.index(before: activeSuffixStart)]
-      startsAfterASCIIAlnum = previous.isASCII && (previous.isLetter || previous.isNumber)
-    } else {
-      startsAfterASCIIAlnum = false
-    }
-    let prefixBeforeSuffix = String(chars[..<activeSuffixStart])
-    let hasWordLikeASCIIPrefixBeforeSuffix = prefixBeforeSuffix.range(
-      of: "[A-Za-z]{3,}[A-Za-z0-9]*$",
-      options: .regularExpression
-    ) != nil
     return .init(
       suffix: suffix,
-      phonabet: phonabet,
-      startsAfterASCIIAlnum: startsAfterASCIIAlnum,
-      hasWordLikeASCIIPrefixBeforeSuffix: hasWordLikeASCIIPrefixBeforeSuffix
+      phonabet: phonabet
     )
   }
 

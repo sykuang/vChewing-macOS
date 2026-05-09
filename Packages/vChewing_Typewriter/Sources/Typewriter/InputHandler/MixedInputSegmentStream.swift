@@ -156,19 +156,11 @@ public struct MixedInputSegmentStream: Sendable {
       segments.append(.raw(""))
       activeRawBuffer.clear()
     }
-    let previousActiveRawText = activeRawText
     let transition = activeRawBuffer.receiveWithTransition(key)
     switch transition {
     case let .restartedFromCurrentKey(commit):
-      guard shouldStartNewRawSegmentAfterRestart(previousRawText: previousActiveRawText, currentKey: key) else {
-        replaceActiveRawText(with: activeRawBuffer.rawBuffer)
-        return commit
-      }
-      replaceActiveRawText(with: previousActiveRawText)
-      segments.append(.raw(key))
-      activeRawBuffer = MixedInputRawBuffer(parser: parser)
-      let freshTransition = activeRawBuffer.receiveWithTransition(key)
-      return freshTransition.commit ?? commit
+      replaceActiveRawText(with: activeRawBuffer.rawBuffer)
+      return commit
     case let .continued(commit):
       replaceActiveRawText(with: activeRawBuffer.rawBuffer)
       return commit
@@ -411,17 +403,6 @@ public struct MixedInputSegmentStream: Sendable {
       base += readings.count
     }
     return base + localReadingIndex
-  }
-
-  private func shouldStartNewRawSegmentAfterRestart(previousRawText: String, currentKey: String) -> Bool {
-    guard previousRawText.count == 1,
-          let previous = previousRawText.unicodeScalars.first,
-          previous.isASCII && CharacterSet.letters.contains(previous),
-          previousRawText == previousRawText.uppercased(),
-          let current = currentKey.unicodeScalars.first,
-          current.isASCII && CharacterSet.decimalDigits.contains(current)
-    else { return false }
-    return true
   }
 
   private mutating func replaceActiveRawText(with text: String) {

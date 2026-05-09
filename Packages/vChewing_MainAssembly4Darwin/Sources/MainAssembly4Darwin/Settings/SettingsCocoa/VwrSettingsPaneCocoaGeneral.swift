@@ -47,6 +47,10 @@ extension SettingsPanesCocoa {
           }
         }?.boxed()
         NSStackView.buildSection(width: contentWidth) {
+          UserDef.kPrimaryOutputScript.render(fixWidth: contentWidth) { renderable in
+            renderable.currentControl?.target = self
+            renderable.currentControl?.action = #selector(self.updatePrimaryOutputScriptAction(_:))
+          }
           UserDef.kReadingNarrationCoverage.render(fixWidth: contentWidth) { renderable in
             renderable.currentControl?.target = self
             renderable.currentControl?.action = #selector(self.updateNarratorSettingsAction(_:))
@@ -83,6 +87,11 @@ extension SettingsPanesCocoa {
       btnLangSelector.action = #selector(updateUiLanguageAction(_:))
       btnLangSelector.target = self
       btnLangSelector.font = NSFont.systemFont(ofSize: 12)
+    }
+
+    @IBAction
+    func updatePrimaryOutputScriptAction(_: NSControl) {
+      InputSession.current?.applyPrimaryOutputScript()
     }
 
     @IBAction

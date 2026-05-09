@@ -314,4 +314,71 @@ extension MainAssemblyTests {
     #expect(testClient.toString() == " 你郝")
     #expect(testSession.state.type == .ofEmpty)
   }
+  /// 回歸：合併入口只在系統輸入來源列表顯示 CHT；簡繁由 PrimaryOutputScript
+  /// picker 透過 IMK `selectMode(_:)` 切換 hidden sub-mode。
+  @Test
+  func test507_PrimaryOutputScriptPickerSelectsHiddenIMKSubMode() throws {
+    testSession.resetInputHandler(forceComposerCleanup: true)
+    testClient.clear()
+    defer {
+      PrefMgr.shared.primaryOutputScript = 0
+      testSession.inputMode = .imeModeCHT
+      PrefMgr.shared.mostRecentInputMode = Shared.InputMode.imeModeCHT.rawValue
+      testClient.selectedModeIdentifier = nil
+    }
+
+    testSession.inputMode = .imeModeCHT
+    PrefMgr.shared.primaryOutputScript = 1
+    testClient.selectedModeIdentifier = nil
+
+    testSession.applyPrimaryOutputScript()
+
+    #expect(testClient.selectedModeIdentifier == Shared.InputMode.imeModeCHS.rawValue)
+    #expect(PrefMgr.shared.mostRecentInputMode == Shared.InputMode.imeModeCHS.rawValue)
+
+    testSession.inputMode = .imeModeCHS
+    PrefMgr.shared.primaryOutputScript = 0
+    testClient.selectedModeIdentifier = nil
+
+    testSession.applyPrimaryOutputScript()
+
+    #expect(testClient.selectedModeIdentifier == Shared.InputMode.imeModeCHT.rawValue)
+    #expect(PrefMgr.shared.mostRecentInputMode == Shared.InputMode.imeModeCHT.rawValue)
+  }
+
+  /// 回歸：合併入口在 Info.plist 層只 expose 單一 CHT 系統入口；CHS 保留為 hidden IMK sub-mode。
+  @Test
+  func test508_InfoPlistShowsSingleVisibleInputSource() throws {
+    let projectRoot = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+    let plistURL = projectRoot
+      .appendingPathComponent("Sources")
+      .appendingPathComponent("vChewingIME_macOS")
+      .appendingPathComponent("Resources")
+      .appendingPathComponent("Info.plist")
+    let data = try Data(contentsOf: plistURL)
+    let plist = try #require(
+      PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any]
+    )
+    let inputMethodServerController = try #require(
+      plist["ComponentInputModeDict"] as? [String: Any]
+    )
+    let visibleInputModes = try #require(
+      inputMethodServerController["tsVisibleInputModeOrderedArrayKey"] as? [String]
+    )
+    #expect(visibleInputModes == [Shared.InputMode.imeModeCHT.rawValue])
+
+    let inputModes = try #require(
+      inputMethodServerController["tsInputModeListKey"] as? [String: [String: Any]]
+    )
+    let cht = try #require(inputModes[Shared.InputMode.imeModeCHT.rawValue])
+    let chs = try #require(inputModes[Shared.InputMode.imeModeCHS.rawValue])
+    #expect(cht["tsInputModeIsVisibleKey"] as? Bool == true)
+    #expect(chs["tsInputModeIsVisibleKey"] as? Bool == false)
+  }
+
 }

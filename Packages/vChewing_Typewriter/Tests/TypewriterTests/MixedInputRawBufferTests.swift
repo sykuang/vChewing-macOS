@@ -140,9 +140,7 @@ struct MixedInputRawBufferTests {
     #expect(buffer.receive(".") == nil)
     #expect(buffer.receiveWithTransition("6") == .continued(commit: .init(
       suffix: "5.6",
-      phonabet: "ㄓㄡˊ",
-      startsAfterASCIIAlnum: true,
-      hasWordLikeASCIIPrefixBeforeSuffix: false
+      phonabet: "ㄓㄡˊ"
     )))
   }
 

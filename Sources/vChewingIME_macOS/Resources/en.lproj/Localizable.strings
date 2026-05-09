@@ -511,3 +511,8 @@
 "You're currently using vChewing %@ (%@), a new version %@ (%@) is now available. Do you want to visit vChewing's website to download the version?" = "You're currently using vChewing %@ (%@), a new version %@ (%@) is now available. Do you want to visit vChewing's website to download the version?";
 "zh-Hans" = "Simplified Chinese";
 "zh-Hant" = "Traditional Chinese";
+
+"i18n:UserDef.kPrimaryOutputScript.description" = "Keep a single visible vChewing input source in System Settings, and choose whether that entry outputs Traditional or Simplified Chinese here.";
+"i18n:UserDef.kPrimaryOutputScript.option.simplified" = "Simplified Chinese";
+"i18n:UserDef.kPrimaryOutputScript.option.traditional" = "Traditional Chinese";
+"i18n:UserDef.kPrimaryOutputScript.shortTitle" = "Primary output script:";

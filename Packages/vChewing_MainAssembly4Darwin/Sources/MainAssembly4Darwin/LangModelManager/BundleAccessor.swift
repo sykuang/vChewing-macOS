@@ -26,13 +26,19 @@ extension Foundation.Bundle {
   /// Makefile no longer needs to patch the auto-generated accessor.
   static let currentSPM: Bundle = {
     let bundleName = "MainAssembly4Darwin_MainAssembly4Darwin"
+    let finderBundle = Bundle(for: _BundleFinder.self)
     let candidates: [URL?] = [
       // .app → Contents/Resources/ (standard macOS bundle location).
       Bundle.main.resourceURL,
       // Framework embedding.
-      Bundle(for: _BundleFinder.self).resourceURL,
+      finderBundle.resourceURL,
+      // SPM test bundles: `Bundle(for:)` may resolve to the `.xctest`
+      // bundle while the target resource bundle sits beside it in the
+      // SwiftPM debug products directory.
+      finderBundle.bundleURL.deletingLastPathComponent(),
       // SPM build directory / command-line tools.
       Bundle.main.bundleURL,
+      Bundle.main.bundleURL.deletingLastPathComponent(),
     ]
     for candidate in candidates {
       guard let url = candidate?.appendingPathComponent(bundleName + ".bundle"),
