@@ -120,12 +120,22 @@ extension InputHandlerProtocol {
     if !mixedInputSegmentStream.isEmpty,
        prefs.mixedAlphanumericalEnabled,
        currentTypingMethod == .vChewingFactory {
+      // Stream 接管時，若 assembler 已被 seed 清空、或 assembler 看到的
+      // reading 數比 stream 少（種子來自既有組字、後續又有 chinese terminal
+      // commit 進來），assembler.cursor 會落後於 stream 末尾，導致視覺游標
+      // 跳回中段、但實際輸入仍 append 到尾端。此時直接用 stream 末尾。
+      let mixedReadingCursor = assembler.length < mixedInputSegmentStream.readingCount
+        ? mixedInputSegmentStream.readingCount
+        : assembler.cursor
+      let mixedReadingMarker = assembler.length < mixedInputSegmentStream.readingCount
+        ? mixedInputSegmentStream.readingCount
+        : assembler.marker
       var result = State.ofInputting(
         displayTextSegments: mixedInputSegmentStream.displayTextSegments,
-        cursor: mixedInputSegmentStream.displayCursor(forReadingCursor: assembler.cursor),
+        cursor: mixedInputSegmentStream.displayCursor(forReadingCursor: mixedReadingCursor),
         highlightAt: nil
       )
-      result.marker = mixedInputSegmentStream.displayCursor(forReadingCursor: assembler.marker)
+      result.marker = mixedInputSegmentStream.displayCursor(forReadingCursor: mixedReadingMarker)
       result.data.rawDisplayTextSegments = mixedInputSegmentStream.displayTextSegments
       if let activeTrieSuffix = mixedInputSegmentStream.activeRawBuffer.activeTriePrefix {
         result.tooltip = activeTrieSuffix.phonabet

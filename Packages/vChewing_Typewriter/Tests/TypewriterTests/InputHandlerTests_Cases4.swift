@@ -186,6 +186,47 @@ extension InputHandlerTests {
     testHandler.prefs.filterStandalonePhonabetInMixedAlphanumerical = true
   }
 
+  /// IH404E: 打全形標點「（」後再打注音 terminal commit 成漢字（如「（」+`su3`→「（你」），
+  /// 視覺游標必須跟上 stream 末尾。
+  @Test
+  func test_IH404E_PunctuationThenChineseCursorStaysAtTail() throws {
+    let (testHandler, _) = try prepareMixedModeHandler()
+    let cleanup = injectTemporaryGrams(testHandler, "ㄋㄧˇ 你 -1")
+    defer { cleanup() }
+
+    _ = testHandler.handlePunctuation("_punctuation_(")
+    typeSentence("su3")
+
+    let s = testHandler.generateStateOfInputting()
+    #expect(s.displayedText == "（你")
+    #expect(s.cursor == s.displayedText.count, "游標應在末尾 \(s.displayedText.count)，但得到 \(s.cursor)")
+  }
+
+  /// IH404D: 打全形標點（`（`/`）`/`，`/`。`/`「`/`」`/…）後再打 ASCII，
+  /// 視覺游標位置應該跟著實際插入位置在末尾，
+  /// 而不是因為 assembler 被 seed 清空而跳回開頭。
+  @Test(arguments: [
+    "_punctuation_(", "_punctuation_)", "_punctuation_<", "_punctuation_>",
+    "_punctuation_;", "_punctuation_:", "_punctuation_!", "_punctuation_?",
+    "_punctuation_[", "_punctuation_]", "_punctuation_{", "_punctuation_}",
+    "_punctuation_'", "_punctuation_=", "_punctuation_*", "_punctuation_&",
+    "_punctuation_@", "_punctuation_#", "_punctuation_~", "_punctuation_|",
+    "_punctuation__",
+  ])
+  func test_IH404D_PunctuationThenAsciiCursorStaysAtTail(_ punctKey: String) throws {
+    let (testHandler, _) = try prepareMixedModeHandler()
+
+    guard testHandler.handlePunctuation(punctKey) else {
+      // LM 沒這個標點 mapping 就跳過。
+      return
+    }
+    typeSentence("a")
+
+    let s = testHandler.generateStateOfInputting()
+    #expect(s.displayedText.hasSuffix("a"))
+    #expect(s.cursor == s.displayedText.count, "標點 \(punctKey) 後游標應在末尾 \(s.displayedText.count)，但得到 \(s.cursor)（顯示 \(s.displayedText.debugDescription)）")
+  }
+
   /// IH404C: 啟用 mixedAlphanumericalEnabled 時（OFF→ON edge），
   /// 自動把 suppressFactoryUnigramsOfKanaSyllables 設成 true；
   /// 但僅作用於 edge，使用者後續仍可手動再開啟假名。
