@@ -186,6 +186,43 @@ extension InputHandlerTests {
     testHandler.prefs.filterStandalonePhonabetInMixedAlphanumerical = true
   }
 
+  /// IH404C: 啟用 mixedAlphanumericalEnabled 時（OFF→ON edge），
+  /// 自動把 suppressFactoryUnigramsOfKanaSyllables 設成 true；
+  /// 但僅作用於 edge，使用者後續仍可手動再開啟假名。
+  @Test
+  func test_IH404C_EnablingMixedAlphanumericalSuppressesKana() throws {
+    let prefs = PrefMgr.sharedSansDidSetOps
+    let originalMixed = prefs.mixedAlphanumericalEnabled
+    let originalKana = prefs.suppressFactoryUnigramsOfKanaSyllables
+    defer {
+      prefs.mixedAlphanumericalEnabled = originalMixed
+      prefs.suppressFactoryUnigramsOfKanaSyllables = originalKana
+    }
+
+    // 場景 1：mixed OFF + kana suppression OFF → 啟用 mixed → kana suppression 應被自動打開。
+    prefs.mixedAlphanumericalEnabled = false
+    prefs.suppressFactoryUnigramsOfKanaSyllables = false
+    prefs.mixedAlphanumericalEnabled = true
+    #expect(prefs.suppressFactoryUnigramsOfKanaSyllables == true)
+
+    // 場景 2：edge 觸發後使用者手動關掉 kana suppression，
+    //         mixed 維持 ON，kana 不應被偷偷再打開。
+    prefs.suppressFactoryUnigramsOfKanaSyllables = false
+    #expect(prefs.suppressFactoryUnigramsOfKanaSyllables == false)
+    #expect(prefs.mixedAlphanumericalEnabled == true)
+
+    // 場景 3：mixed 從 ON→OFF→ON 才會再次觸發 edge。
+    prefs.mixedAlphanumericalEnabled = false
+    #expect(prefs.suppressFactoryUnigramsOfKanaSyllables == false)
+    prefs.mixedAlphanumericalEnabled = true
+    #expect(prefs.suppressFactoryUnigramsOfKanaSyllables == true)
+
+    // 場景 4：mixed 已 ON 時再次設成 ON（同值賦值）不應動 kana。
+    prefs.suppressFactoryUnigramsOfKanaSyllables = false
+    prefs.mixedAlphanumericalEnabled = true
+    #expect(prefs.suppressFactoryUnigramsOfKanaSyllables == false)
+  }
+
   /// 中英混打時，藍色 inline 應顯示 raw buffer 狀態，
   /// 黑色 tooltip 才顯示目前 Trie/composer 走到的注音。
   @Test

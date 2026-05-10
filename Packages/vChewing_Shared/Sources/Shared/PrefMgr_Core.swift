@@ -327,7 +327,17 @@ public final class PrefMgr: PrefMgrProtocol, Sendable {
   public var usingHotKeyInputMode: Bool
 
   @AppProperty(userDef: .kMixedAlphanumericalEnabled)
-  public var mixedAlphanumericalEnabled: Bool
+  public var mixedAlphanumericalEnabled: Bool {
+    didSet {
+      // 中英混打模式啟用時（OFF→ON edge），自動把假名 unigram 抑制打開，
+      // 避免日文候選干擾中英輸入。使用者之後仍可手動再開啟假名。
+      guard mixedAlphanumericalEnabled, !oldValue else { return }
+      if !suppressFactoryUnigramsOfKanaSyllables {
+        suppressFactoryUnigramsOfKanaSyllables = true
+        didAskForSyncingLMPrefs?()
+      }
+    }
+  }
 
   @AppProperty(userDef: .kUserPhrasesDatabaseBypassed)
   public var userPhrasesDatabaseBypassed: Bool {
