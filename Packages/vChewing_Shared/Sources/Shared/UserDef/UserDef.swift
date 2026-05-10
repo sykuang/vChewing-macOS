@@ -61,6 +61,7 @@ nonisolated public enum UserDef: String, CaseIterable, Identifiable, Sendable {
   case kDodgeInvalidEdgeCandidateCursorPosition = "DodgeInvalidEdgeCandidateCursorPosition"
   case kEscToCleanInputBuffer = "EscToCleanInputBuffer"
   case kAcceptLeadingIntonations = "AcceptLeadingIntonations"
+  case kFilterStandalonePhonabetInMixedAlphanumerical = "FilterStandalonePhonabetInMixedAlphanumerical"
   case kSpecifyIntonationKeyBehavior = "SpecifyIntonationKeyBehavior"
   case kSpecifyShiftBackSpaceKeyBehavior = "SpecifyShiftBackSpaceKeyBehavior"
   case kSpecifyShiftTabKeyBehavior = "SpecifyShiftTabKeyBehavior"
@@ -466,6 +467,7 @@ nonisolated extension UserDef {
     case .kDodgeInvalidEdgeCandidateCursorPosition: return .bool(true)
     case .kEscToCleanInputBuffer: return .bool(true)
     case .kAcceptLeadingIntonations: return .bool(true)
+    case .kFilterStandalonePhonabetInMixedAlphanumerical: return .bool(true)
     case .kSpecifyIntonationKeyBehavior: return .integer(0)
     case .kSpecifyShiftBackSpaceKeyBehavior: return .integer(0)
     case .kSpecifyShiftTabKeyBehavior: return .bool(false)
@@ -757,6 +759,11 @@ nonisolated extension UserDef {
     case .kEscToCleanInputBuffer: return .init(
         userDef: self, shortTitle: "Use ESC key to clear the entire input buffer",
         description: "If unchecked, the ESC key will try cleaning the unfinished readings / strokes first, and will commit the current composition buffer if there's no unfinished readings / strokes."
+      )
+    case .kFilterStandalonePhonabetInMixedAlphanumerical: return .init(
+        userDef: self,
+        shortTitle: "Filter standalone single-phonabet readings in mixed alphanumerical mode",
+        description: "When enabled, mixed-alphanumerical commits like \"1 \" / \"q \" / \"2 \" that would otherwise resolve to a single bare phonabet (e.g. ㄅ / ㄎ / ㄉ) are blocked and kept as raw ASCII. Disable this to allow such standalone single-phonabet outputs."
       )
     case .kAcceptLeadingIntonations: return .init(
         userDef: self, shortTitle: "Accept leading intonations in rare cases",

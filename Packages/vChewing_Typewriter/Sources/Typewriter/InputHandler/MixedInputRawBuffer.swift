@@ -83,7 +83,6 @@ public struct MixedInputRawBuffer: Sendable {
     let activePhonabet: String
     let state: ZhuyinKeyTrie.AdvanceResult
     let terminalCommit: Commit?
-    let terminalContinuationState: ZhuyinKeyTrie.AdvanceResult?
   }
 
   public private(set) var rawBuffer = ""
@@ -167,8 +166,7 @@ public struct MixedInputRawBuffer: Sendable {
       activeSuffixStart: activeSuffixStart,
       activePhonabet: activePhonabet,
       state: state,
-      terminalCommit: nil,
-      terminalContinuationState: nil
+      terminalCommit: nil
     )
     let terminalCommit = terminalCommit(for: frame)
     frame = Frame(
@@ -178,8 +176,7 @@ public struct MixedInputRawBuffer: Sendable {
       activeSuffixStart: frame.activeSuffixStart,
       activePhonabet: frame.activePhonabet,
       state: frame.state,
-      terminalCommit: terminalCommit,
-      terminalContinuationState: terminalCommit.flatMap { _ in terminalContinuationState(from: frame) }
+      terminalCommit: terminalCommit
     )
     frames.append(frame)
     if activeCursor == nil { return .deadStayedRaw }
@@ -230,20 +227,6 @@ public struct MixedInputRawBuffer: Sendable {
     )
   }
 
-  public var currentTerminalContinuationState: ZhuyinKeyTrie.AdvanceResult? {
-    frames.last?.terminalContinuationState
-  }
-
-  private func terminalContinuationState(from frame: Frame) -> ZhuyinKeyTrie.AdvanceResult? {
-    guard frame.state == .terminal,
-          let cursor = frame.activeCursor,
-          let previous = frames.last,
-          let previousSuffixStart = previous.activeSuffixStart,
-          previousSuffixStart == frame.activeSuffixStart
-    else { return nil }
-    let trie = ZhuyinKeyTrie.shared(for: parser)
-    return trie.advance(from: cursor, with: previous.normalizedKey).state
-  }
 
   public static func longestTonedSuffix(
     in rawBuffer: String,

@@ -265,6 +265,9 @@ public final class PrefMgr: PrefMgrProtocol, Sendable {
   @AppProperty(userDef: .kAcceptLeadingIntonations)
   public var acceptLeadingIntonations: Bool
 
+  @AppProperty(userDef: .kFilterStandalonePhonabetInMixedAlphanumerical)
+  public var filterStandalonePhonabetInMixedAlphanumerical: Bool
+
   @AppProperty(userDef: .kSpecifyIntonationKeyBehavior)
   public var specifyIntonationKeyBehavior: Int
 

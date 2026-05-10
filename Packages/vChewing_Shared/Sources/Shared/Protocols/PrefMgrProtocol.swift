@@ -93,6 +93,7 @@ public protocol PrefMgrProtocol {
   var halfWidthPunctuationEnabled: Bool { get set }
   var escToCleanInputBuffer: Bool { get set }
   var acceptLeadingIntonations: Bool { get set }
+  var filterStandalonePhonabetInMixedAlphanumerical: Bool { get set }
   var specifyIntonationKeyBehavior: Int { get set }
   var specifyShiftBackSpaceKeyBehavior: Int { get set }
   var specifyShiftTabKeyBehavior: Bool { get set }

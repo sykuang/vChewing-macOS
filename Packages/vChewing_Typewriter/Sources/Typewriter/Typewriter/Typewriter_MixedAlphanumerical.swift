@@ -129,15 +129,13 @@ public struct MixedAlphanumericalTypewriter<Handler: InputHandlerProtocol>: Type
 
     let rawBufferForTerminalCommit = handler.mixedInputSegmentStream.activeRawBuffer
     let terminalCommit = rawBufferForTerminalCommit.currentTerminalCommit
-      ?? spaceToneTerminalCommitIfReady(rawBuffer: rawBufferForTerminalCommit, input: input)
 
     if !forceASCIIPunctuationPath,
        applyTerminalSuffixCommit(
          rawBuffer: rawBufferForTerminalCommit,
          terminalCommit: terminalCommit,
          inputInvalid: input.isInvalid,
-         session: session,
-         shouldCommitASCIIPrefix: false
+         session: session
        ) {
       return true
     }
@@ -152,7 +150,6 @@ public struct MixedAlphanumericalTypewriter<Handler: InputHandlerProtocol>: Type
   // MARK: Private
 
   private struct TerminalSuffixCandidate {
-    let prefixText: String
     let suffixText: String
     let readingKey: String
     let candidateText: String
@@ -183,80 +180,53 @@ public struct MixedAlphanumericalTypewriter<Handler: InputHandlerProtocol>: Type
     rawBuffer: MixedInputRawBuffer,
     terminalCommit: MixedInputRawBuffer.Commit?,
     inputInvalid: Bool,
-    session: Session,
-    shouldCommitASCIIPrefix: Bool
+    session: Session
   ) -> Bool {
     guard let candidate = terminalSuffixCandidate(
       rawBuffer: rawBuffer,
       terminalCommit: terminalCommit
     ) else { return false }
 
-    let priorChineseText = handler.committableDisplayText(sansReading: true, includeMixedAlphanumericalPrefix: false)
-    let priorChineseKeyCount = handler.assembler.length
-    if shouldCommitASCIIPrefix, priorChineseKeyCount > 0, !priorChineseText.isEmpty {
-      session.commit(text: priorChineseText)
-      handler.assembler.cursor = 0
-      for _ in 0 ..< priorChineseKeyCount {
-        _ = handler.dropKey(direction: .front)
-      }
-    }
-
     guard !inputInvalid, (try? handler.assembler.insertKey(candidate.readingKey)) != nil else {
       errorCallback("3CF278C9-C: 得檢查對應的語言模組的 hasUnigramsFor() 是否有誤判之情形。")
       return true
     }
 
-    let overflowText = handler.commitOverflownComposition
-    let textToCommit = shouldCommitASCIIPrefix ? candidate.prefixText + overflowText : ""
+    let textToCommit = ""
     handler.composer.clear()
-    if shouldCommitASCIIPrefix {
-      handler.mixedInputRawBuffer.clear()
-      handler.mixedInputSegmentStream.clear(keepingParser: handler.composer.parser)
-      handler.mixedAlphanumericalBuffer.removeAll()
-    } else {
-      var stream = handler.mixedInputSegmentStream
-      if stream.isEmpty {
-        stream = mixedStreamSeededFromCurrentComposition()
-        if !rawBuffer.rawBuffer.isEmpty {
-          for key in rawBuffer.rawBuffer.map(\.description) {
-            _ = stream.appendRawKey(key)
-          }
+    var stream = handler.mixedInputSegmentStream
+    if stream.isEmpty {
+      stream = mixedStreamSeededFromCurrentComposition()
+      if !rawBuffer.rawBuffer.isEmpty {
+        for key in rawBuffer.rawBuffer.map(\.description) {
+          _ = stream.appendRawKey(key)
         }
       }
-      if let replacement = stream.chineseReplacement(
-        for: .init(suffix: candidate.suffixText, phonabet: candidate.readingKey),
-        chineseText: candidate.candidateText,
-        readings: candidate.readingKey.components(separatedBy: handler.keySeparator),
-        acceptsLeadingIntonation: handler.prefs.acceptLeadingIntonations
-      ) {
-        stream.replaceActiveRawWithChinese(replacement)
-      }
-      handler.mixedInputSegmentStream = stream
-      if !shouldCommitASCIIPrefix,
-         let mixedPOMQuery = handler.mixedInputPOMQueryOverrideForLastChineseSegment() {
-        handler.retrievePOMSuggestions(
-          apply: true,
-          mixedInputReadBufferOverride: mixedPOMQuery
-        )
-        handler.syncMixedInputSegmentStreamChineseSegmentsFromAssembler()
-      }
-      handler.mixedInputRawBuffer = handler.mixedInputSegmentStream.activeRawBuffer
-      handler.mixedAlphanumericalBuffer = handler.mixedInputSegmentStream.activeRawText
     }
+    if let replacement = stream.chineseReplacement(
+      for: .init(suffix: candidate.suffixText, phonabet: candidate.readingKey),
+      chineseText: candidate.candidateText,
+      readings: candidate.readingKey.components(separatedBy: handler.keySeparator),
+      acceptsLeadingIntonation: handler.prefs.acceptLeadingIntonations
+    ) {
+      stream.replaceActiveRawWithChinese(replacement)
+    }
+    handler.mixedInputSegmentStream = stream
+    if let mixedPOMQuery = handler.mixedInputPOMQueryOverrideForLastChineseSegment() {
+      handler.retrievePOMSuggestions(
+        apply: true,
+        mixedInputReadBufferOverride: mixedPOMQuery
+      )
+      handler.syncMixedInputSegmentStreamChineseSegmentsFromAssembler()
+    }
+    handler.mixedInputRawBuffer = handler.mixedInputSegmentStream.activeRawBuffer
+    handler.mixedAlphanumericalBuffer = handler.mixedInputSegmentStream.activeRawText
 
     var inputting = handler.generateStateOfInputting()
     inputting.textToCommit = textToCommit
     session.switchState(inputting)
     handler.handleTypewriterSCPCTasks()
     return true
-  }
-
-  private func spaceToneTerminalCommitIfReady(
-    rawBuffer: MixedInputRawBuffer,
-    input: some InputSignalProtocol
-  ) -> MixedInputRawBuffer.Commit? {
-    guard input.isSpace, rawBuffer.rawBuffer == "5 " else { return nil }
-    return .init(suffix: rawBuffer.rawBuffer, phonabet: "ㄓ")
   }
 
   private func terminalSuffixCandidate(
@@ -267,13 +237,12 @@ public struct MixedAlphanumericalTypewriter<Handler: InputHandlerProtocol>: Type
     let suffixText = terminalCommit.suffix
     guard rawBuffer.rawBuffer.hasSuffix(suffixText) else { return nil }
     if shouldVetoTerminalCommitForCompletedEnglishToken(rawText: rawBuffer.rawBuffer) { return nil }
-    if rawBuffer.rawBuffer.count > 1, rawBuffer.rawBuffer != suffixText {
-      guard rawBuffer.currentTerminalContinuationState != .terminal else { return nil }
-    }
     guard handler.prefs.acceptLeadingIntonations || !terminalCommit.suffixIsLeadingIntonation else { return nil }
-    return buildTerminalSuffixCandidate(
-      suffixText: suffixText
-    )
+    let candidate = buildTerminalSuffixCandidate(suffixText: suffixText)
+    if handler.prefs.filterStandalonePhonabetInMixedAlphanumerical,
+       let candidate,
+       isStandaloneSinglePhonabetCandidate(candidate) { return nil }
+    return candidate
   }
 
   private func shouldVetoTerminalCommitForCompletedEnglishToken(rawText: String) -> Bool {
@@ -281,6 +250,17 @@ public struct MixedAlphanumericalTypewriter<Handler: InputHandlerProtocol>: Type
       return false
     }
     return EnglishWordLexicon.bundled.containsExactToken(completedToken)
+  }
+
+  /// 判定 terminal commit 的最佳候選字是否就是 phonabet 自己（例如 reading=`ㄅ` 且
+  /// bestCandidate 也是 `ㄅ`）——這代表 LM 對該單聲注音查不到真正漢字、只能 fall back
+  /// 回 reading key 自己。由 `filterStandalonePhonabetInMixedAlphanumerical`
+  /// preference 控制是否擋掉。能查到真漢字（如 `ㄕ→詩`、`ㄓ→之`）的單聲注音不在此列。
+  private func isStandaloneSinglePhonabetCandidate(_ candidate: TerminalSuffixCandidate) -> Bool {
+    let readings = candidate.readingKey.components(separatedBy: handler.keySeparator)
+    guard readings.count == 1, let reading = readings.first else { return false }
+    guard reading.unicodeScalars.count == 1 else { return false }
+    return candidate.candidateText == reading
   }
 
   private func buildTerminalSuffixCandidate(suffixText: String) -> TerminalSuffixCandidate? {
@@ -327,7 +307,6 @@ public struct MixedAlphanumericalTypewriter<Handler: InputHandlerProtocol>: Type
     }
 
     return .init(
-      prefixText: "",
       suffixText: suffixText,
       readingKey: readingKey,
       candidateText: bestCandidateText(for: readingKey)
@@ -340,17 +319,6 @@ public struct MixedAlphanumericalTypewriter<Handler: InputHandlerProtocol>: Type
       .max(by: { $0.probability < $1.probability }) {
       return best.value
     }
-    return readingKey
-  }
-
-  private func completedComposerReadingKey(from composer: Tekkon.Composer) -> String? {
-    guard composer.isPronounceable,
-          composer.hasIntonation(),
-          let readingKey = composer.phonabetKeyForQuery(
-            pronounceableOnly: handler.prefs.acceptLeadingIntonations
-          ),
-          handler.currentLM.hasUnigramsForFast(keyArray: [readingKey])
-    else { return nil }
     return readingKey
   }
 

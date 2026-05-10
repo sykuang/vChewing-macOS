@@ -141,6 +141,51 @@ extension InputHandlerTests {
     #expect(testHandler.mixedAlphanumericalBuffer.isEmpty)
   }
 
+  /// IH404B: `filterStandalonePhonabetInMixedAlphanumerical` gate 必須區分
+  /// 「LM bestCandidate == reading 自己（如 ㄅ→ㄅ）」與「LM 有真漢字（如 ㄕ→詩）」。
+  /// Preference ON：前者擋成 raw、後者放行 commit 漢字。
+  /// Preference OFF：兩者皆 commit。
+  @Test
+  func test_IH404B_FilterStandalonePhonabetInMixedAlphanumericalGate() throws {
+    let (testHandler, testSession) = try prepareMixedModeHandler()
+    // 模擬 production LM：
+    //   ㄅ / ㄉ：LM 只能 fall back 回 reading 自己（注入「ㄅ ㄅ」「ㄉ ㄉ」）。
+    //   ㄕ / ㄓ：LM 有真漢字（注入「ㄕ 詩」「ㄓ 之」）。
+    let testKanjiData = """
+    ㄅ ㄅ -1
+    ㄉ ㄉ -1
+    ㄕ 詩 -1
+    ㄓ 之 -1
+    """
+    let cleanup = injectTemporaryGrams(testHandler, testKanjiData)
+    defer { cleanup(); testHandler.clear() }
+
+    struct Case { let input: String; let onExpect: String; let offExpect: String }
+    let cases: [Case] = [
+      .init(input: "1 ", onExpect: "1 ", offExpect: "ㄅ"),  // LM fallback → 擋
+      .init(input: "2 ", onExpect: "2 ", offExpect: "ㄉ"),  // LM fallback → 擋
+      .init(input: "g ", onExpect: "詩", offExpect: "詩"),  // 真漢字 → 不擋
+      .init(input: "5 ", onExpect: "之", offExpect: "之"),  // 真漢字 → 不擋
+    ]
+
+    for prefOn in [true, false] {
+      testHandler.prefs.filterStandalonePhonabetInMixedAlphanumerical = prefOn
+      for c in cases {
+        testHandler.clear()
+        testSession.recentCommissions.removeAll()
+        typeSentence(c.input)
+        _ = testHandler.triageInput(event: KBEvent.KeyEventData.dataEnterReturn.asEvent)
+        let commissioned = testSession.recentCommissions.joined()
+        let expected = prefOn ? c.onExpect : c.offExpect
+        #expect(
+          commissioned == expected,
+          "Preference \(prefOn ? "ON" : "OFF") 時 \(c.input.debugDescription) 應 commit \(expected.debugDescription)，但得到 \(commissioned.debugDescription)"
+        )
+      }
+    }
+    testHandler.prefs.filterStandalonePhonabetInMixedAlphanumerical = true
+  }
+
   /// 中英混打時，藍色 inline 應顯示 raw buffer 狀態，
   /// 黑色 tooltip 才顯示目前 Trie/composer 走到的注音。
   @Test
