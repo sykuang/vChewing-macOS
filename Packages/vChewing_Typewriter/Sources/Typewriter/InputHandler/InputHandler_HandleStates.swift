@@ -120,22 +120,18 @@ extension InputHandlerProtocol {
     if !mixedInputSegmentStream.isEmpty,
        prefs.mixedAlphanumericalEnabled,
        currentTypingMethod == .vChewingFactory {
-      // Stream 接管時，若 assembler 已被 seed 清空、或 assembler 看到的
-      // reading 數比 stream 少（種子來自既有組字、後續又有 chinese terminal
-      // commit 進來），assembler.cursor 會落後於 stream 末尾，導致視覺游標
-      // 跳回中段、但實際輸入仍 append 到尾端。此時直接用 stream 末尾。
-      let mixedReadingCursor = assembler.length < mixedInputSegmentStream.readingCount
-        ? mixedInputSegmentStream.readingCount
-        : assembler.cursor
-      let mixedReadingMarker = assembler.length < mixedInputSegmentStream.readingCount
-        ? mixedInputSegmentStream.readingCount
-        : assembler.marker
+      // Stream 接管時，cursor / marker 完全由 stream 自管，
+      // assembler.cursor 在此情境只是「下一鍵 reading 暫存器」，無視覺語意。
       var result = State.ofInputting(
         displayTextSegments: mixedInputSegmentStream.displayTextSegments,
-        cursor: mixedInputSegmentStream.displayCursor(forReadingCursor: mixedReadingCursor),
+        cursor: mixedInputSegmentStream.displayCursor(
+          forStreamCursor: mixedInputSegmentStream.streamCursor
+        ),
         highlightAt: nil
       )
-      result.marker = mixedInputSegmentStream.displayCursor(forReadingCursor: mixedReadingMarker)
+      result.marker = mixedInputSegmentStream.displayCursor(
+        forStreamCursor: mixedInputSegmentStream.streamMarker
+      )
       result.data.rawDisplayTextSegments = mixedInputSegmentStream.displayTextSegments
       if let activeTrieSuffix = mixedInputSegmentStream.activeRawBuffer.activeTriePrefix {
         result.tooltip = activeTrieSuffix.phonabet
@@ -447,6 +443,33 @@ extension InputHandlerProtocol {
       newState.data.tooltipColorState = .warning
       newState.tooltipDuration = 1.85
       session.switchState(newState)
+      return true
+    }
+
+    // Mixed-stream dispatch for Shift + Left/Right while in marking state.
+    if isMixedStreamArrowDispatchActive, input.isShiftHold,
+       (input.isCursorBackward || input.isCursorForward) {
+      let toFront = input.isCursorForward
+      let moved = (input.isCommandHold || input.isOptionHold)
+        ? mixedInputSegmentStream.jumpStreamCursorBySegment(toFront: toFront, isMarker: true)
+        : (toFront
+            ? mixedInputSegmentStream.moveStreamCursorForward(isMarker: true)
+            : mixedInputSegmentStream.moveStreamCursorBackward(isMarker: true))
+      guard moved else {
+        errorCallback?(toFront ? "9B51408D-S" : "D326DEA3-S")
+        return true
+      }
+      syncAssemblerCursorFromStream()
+      let range = currentMixedStreamMarkedRange()
+      var marking = State.ofMarking(
+        displayTextSegments: state.displayTextSegments,
+        markedReadings: mixedInputSegmentStream.tokensForStreamRange(range),
+        cursor: mixedInputSegmentStream.displayCursor(forStreamCursor: mixedInputSegmentStream.streamCursor),
+        marker: mixedInputSegmentStream.displayCursor(forStreamCursor: mixedInputSegmentStream.streamMarker)
+      )
+      marking.data.rawDisplayTextSegments = state.data.rawDisplayTextSegments
+      marking.tooltipBackupForInputting = state.tooltipBackupForInputting
+      session.switchState(marking.markedRange.isEmpty ? marking.convertedToInputting : marking)
       return true
     }
 
@@ -861,6 +884,40 @@ extension InputHandlerProtocol {
     return true
   }
 
+  // MARK: - Mixed-stream arrow-key dispatch helper
+
+  /// Stream 接管時，方向鍵 / Home / End / Shift+方向鍵都應該操作 stream cursor、
+  /// 而非 assembler.cursor。本旗標統一條件，避免散落在每處 handler 內。
+  var isMixedStreamArrowDispatchActive: Bool {
+    prefs.mixedAlphanumericalEnabled
+      && !mixedInputSegmentStream.isEmpty
+      && currentTypingMethod == .vChewingFactory
+  }
+
+  /// 在進入 marking 之前，把 stream marker 對齊到 stream cursor。
+  func resetMixedStreamMarkerToCursor() {
+    mixedInputSegmentStream.streamMarker = mixedInputSegmentStream.streamCursor
+  }
+
+  /// Stream 接管時的 marking range（stream-unit 計）。
+  func currentMixedStreamMarkedRange() -> Range<Int> {
+    let cursor = mixedInputSegmentStream.streamCursor
+    let marker = mixedInputSegmentStream.streamMarker
+    return min(cursor, marker) ..< max(cursor, marker)
+  }
+
+  /// Stream cursor 改動後同步 `assembler.cursor` / `assembler.marker`。
+  /// Assembler 只看 chinese readings，候選窗 anchor、Enter commit、上下候選
+  /// 都靠它定位。Stream 接管時所有方向鍵 / Home / End 都應透過此 helper
+  /// 將 stream cursor 換算回 assembler 視角後寫回。
+  func syncAssemblerCursorFromStream() {
+    let stream = mixedInputSegmentStream
+    let cursorInReadings = stream.chineseReadingPrefixCount(forStreamCursor: stream.streamCursor)
+    let markerInReadings = stream.chineseReadingPrefixCount(forStreamCursor: stream.streamMarker)
+    assembler.cursor = min(max(cursorInReadings, 0), assembler.length)
+    assembler.marker = min(max(markerInReadings, 0), assembler.length)
+  }
+
   // MARK: - 處理 Home 鍵的行為
 
   /// 處理 Home 鍵的行為。
@@ -872,6 +929,16 @@ extension InputHandlerProtocol {
 
     if !isComposerOrCalligrapherEmpty {
       errorCallback?("ABC44080")
+      return true
+    }
+
+    if isMixedStreamArrowDispatchActive {
+      if mixedInputSegmentStream.moveStreamCursorToHome() {
+        syncAssemblerCursorFromStream()
+        session.switchState(generateStateOfInputting())
+      } else {
+        errorCallback?("66D97F90")
+      }
       return true
     }
 
@@ -896,6 +963,16 @@ extension InputHandlerProtocol {
 
     if !isComposerOrCalligrapherEmpty {
       errorCallback?("9B69908D")
+      return true
+    }
+
+    if isMixedStreamArrowDispatchActive {
+      if mixedInputSegmentStream.moveStreamCursorToEnd() {
+        syncAssemblerCursorFromStream()
+        session.switchState(generateStateOfInputting())
+      } else {
+        errorCallback?("9B69908E")
+      }
       return true
     }
 
@@ -972,6 +1049,43 @@ extension InputHandlerProtocol {
       return true
     }
 
+    if isMixedStreamArrowDispatchActive {
+      if input.isShiftHold {
+        let moved = (input.isCommandHold || input.isOptionHold)
+          ? mixedInputSegmentStream.jumpStreamCursorBySegment(toFront: true, isMarker: true)
+          : mixedInputSegmentStream.moveStreamCursorForward(isMarker: true)
+        guard moved else { errorCallback?("BB7F6DB9-S"); return true }
+        syncAssemblerCursorFromStream()
+        let range = currentMixedStreamMarkedRange()
+        var marking = State.ofMarking(
+          displayTextSegments: compositionBufferDisplayTextSegments(),
+          markedReadings: mixedInputSegmentStream.tokensForStreamRange(range),
+          cursor: mixedInputSegmentStream.displayCursor(forStreamCursor: mixedInputSegmentStream.streamCursor),
+          marker: mixedInputSegmentStream.displayCursor(forStreamCursor: mixedInputSegmentStream.streamMarker)
+        )
+        marking.data.rawDisplayTextSegments = mixedInputSegmentStream.displayTextSegments
+        marking.tooltipBackupForInputting = state.tooltip
+        session.switchState(marking)
+        return true
+      }
+      if input.isOptionHold, !input.isShiftHold {
+        if input.isControlHold { return handleEnd() }
+        if !mixedInputSegmentStream.jumpStreamCursorBySegment(toFront: true) {
+          errorCallback?("33C3B580-S"); return true
+        }
+        syncAssemblerCursorFromStream()
+        session.switchState(generateStateOfInputting())
+        return true
+      }
+      if mixedInputSegmentStream.moveStreamCursorForward() {
+        syncAssemblerCursorFromStream()
+        session.switchState(generateStateOfInputting())
+      } else {
+        errorCallback?("A96AAD58-S")
+      }
+      return true
+    }
+
     if input.isShiftHold {
       // Shift + Right
       if assembler.cursor < assembler.length {
@@ -1030,6 +1144,43 @@ extension InputHandlerProtocol {
 
     if !isComposerOrCalligrapherEmpty {
       errorCallback?("6ED95318")
+      return true
+    }
+
+    if isMixedStreamArrowDispatchActive {
+      if input.isShiftHold {
+        let moved = (input.isCommandHold || input.isOptionHold)
+          ? mixedInputSegmentStream.jumpStreamCursorBySegment(toFront: false, isMarker: true)
+          : mixedInputSegmentStream.moveStreamCursorBackward(isMarker: true)
+        guard moved else { errorCallback?("D326DEA3-S"); return true }
+        syncAssemblerCursorFromStream()
+        let range = currentMixedStreamMarkedRange()
+        var marking = State.ofMarking(
+          displayTextSegments: compositionBufferDisplayTextSegments(),
+          markedReadings: mixedInputSegmentStream.tokensForStreamRange(range),
+          cursor: mixedInputSegmentStream.displayCursor(forStreamCursor: mixedInputSegmentStream.streamCursor),
+          marker: mixedInputSegmentStream.displayCursor(forStreamCursor: mixedInputSegmentStream.streamMarker)
+        )
+        marking.data.rawDisplayTextSegments = mixedInputSegmentStream.displayTextSegments
+        marking.tooltipBackupForInputting = state.tooltip
+        session.switchState(marking)
+        return true
+      }
+      if input.isOptionHold, !input.isShiftHold {
+        if input.isControlHold { return handleHome() }
+        if !mixedInputSegmentStream.jumpStreamCursorBySegment(toFront: false) {
+          errorCallback?("8D50DD9E-S"); return true
+        }
+        syncAssemblerCursorFromStream()
+        session.switchState(generateStateOfInputting())
+        return true
+      }
+      if mixedInputSegmentStream.moveStreamCursorBackward() {
+        syncAssemblerCursorFromStream()
+        session.switchState(generateStateOfInputting())
+      } else {
+        errorCallback?("7045E6F3-S")
+      }
       return true
     }
 

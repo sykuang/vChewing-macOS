@@ -50,6 +50,13 @@ public struct MixedInputSegmentStream: Sendable {
   public private(set) var activeRawBuffer: MixedInputRawBuffer
   public let parser: Tekkon.MandarinParser
 
+  /// Stream 自管的「游標」，以 stream-unit 為單位（chinese 段每個 reading=1
+  /// 單位、raw 段每個 char=1 單位）。Stream 接管時這是視覺游標的唯一真相來源。
+  public private(set) var streamCursor: Int = 0
+  /// Stream 自管的 marker（用於 marking range）。預設與 streamCursor 同步，
+  /// 進入 marking 後才從游標延伸。
+  public var streamMarker: Int = 0
+
   public init(parser: Tekkon.MandarinParser = .ofDachen) {
     self.parser = parser
     self.activeRawBuffer = MixedInputRawBuffer(parser: parser)
@@ -100,6 +107,48 @@ public struct MixedInputSegmentStream: Sendable {
 
   public var readingCount: Int {
     readingSegments.reduce(0) { $0 + $1.count }
+  }
+
+  /// Stream-unit 總數：chinese 段每個 reading=1 單位、raw 段每個 char=1 單位。
+  /// 即 `streamCursor` 的合法上界。
+  public var streamUnitCount: Int {
+    var total = 0
+    for segment in segments {
+      switch segment {
+      case let .chinese(_, readings): total += readings.count
+      case let .raw(text): total += text.count
+      }
+    }
+    return total
+  }
+
+  /// 把 stream-unit 為單位的游標換算成 displayText 中的字元位移。
+  ///
+  /// 與 `displayCursor(forReadingCursor:)` 不同：本 API 把 raw 段裡的每個
+  /// char 也算成 1 個游標單位，方便方向鍵在 raw 區裡逐字移動。
+  public func displayCursor(forStreamCursor cursor: Int) -> Int {
+    var remaining = max(cursor, 0)
+    var displayCursor = 0
+    for segment in segments {
+      switch segment {
+      case let .chinese(text, readings):
+        let textLength = text.count
+        if remaining <= readings.count {
+          // readings 與 textUnits 不一定等長：以 min 防呆。
+          return displayCursor + min(remaining, textLength)
+        }
+        displayCursor += textLength
+        remaining -= readings.count
+      case let .raw(text):
+        let length = text.count
+        if remaining <= length {
+          return displayCursor + remaining
+        }
+        displayCursor += length
+        remaining -= length
+      }
+    }
+    return displayCursor
   }
 
   public func displayCursor(forReadingCursor readingCursor: Int) -> Int {
@@ -157,17 +206,20 @@ public struct MixedInputSegmentStream: Sendable {
       activeRawBuffer.clear()
     }
     let transition = activeRawBuffer.receiveWithTransition(key)
+    let result: MixedInputRawBuffer.Commit?
     switch transition {
     case let .restartedFromCurrentKey(commit):
       replaceActiveRawText(with: activeRawBuffer.rawBuffer)
-      return commit
+      result = commit
     case let .continued(commit):
       replaceActiveRawText(with: activeRawBuffer.rawBuffer)
-      return commit
+      result = commit
     case .deadStayedRaw:
       replaceActiveRawText(with: activeRawBuffer.rawBuffer)
-      return nil
+      result = nil
     }
+    snapCursorToEnd()
+    return result
   }
 
   public mutating func replaceActiveRawWithChinese(
@@ -180,6 +232,7 @@ public struct MixedInputSegmentStream: Sendable {
     appendRaw(untouchedRawPrefix)
     appendChinese(text: replacement.chineseText, readings: replacement.readings)
     activeRawBuffer.clear()
+    snapCursorToEnd()
   }
 
   public func chineseReplacement(
@@ -210,6 +263,7 @@ public struct MixedInputSegmentStream: Sendable {
     } else {
       segments.append(.chinese(text: text, readings: readings))
     }
+    snapCursorToEnd()
   }
 
   public mutating func appendRaw(_ text: String) {
@@ -219,31 +273,45 @@ public struct MixedInputSegmentStream: Sendable {
     } else {
       segments.append(.raw(text))
     }
+    snapCursorToEnd()
   }
 
   @discardableResult
   public mutating func backspace(readingCursor: Int? = nil) -> BackspaceDeletion? {
+    let result: BackspaceDeletion?
     if let readingCursor, let deletion = removeChineseReading(before: readingCursor) {
-      return deletion
-    }
-
-    guard let last = segments.last else { return nil }
-    switch last {
-    case let .raw(text):
-      guard let removedCharacter = text.last else { return nil }
-      var newText = text
-      newText.removeLast()
-      if newText.isEmpty {
-        _ = segments.popLast()
-      } else {
-        segments[segments.count - 1] = .raw(newText)
+      result = deletion
+    } else if let last = segments.last {
+      switch last {
+      case let .raw(text):
+        if let removedCharacter = text.last {
+          var newText = text
+          newText.removeLast()
+          if newText.isEmpty {
+            _ = segments.popLast()
+          } else {
+            segments[segments.count - 1] = .raw(newText)
+          }
+          rebuildActiveRawBuffer()
+          result = .rawCharacter(removedCharacter.description)
+        } else {
+          result = nil
+        }
+      case let .chinese(_, readings):
+        if !readings.isEmpty {
+          result = removeChineseReading(
+            inSegmentAt: segments.count - 1,
+            readingIndex: max(readings.count - 1, 0)
+          )
+        } else {
+          result = nil
+        }
       }
-      rebuildActiveRawBuffer()
-      return .rawCharacter(removedCharacter.description)
-    case let .chinese(_, readings):
-      guard !readings.isEmpty else { return nil }
-      return removeChineseReading(inSegmentAt: segments.count - 1, readingIndex: max(readings.count - 1, 0))
+    } else {
+      result = nil
     }
+    clampCursorAndMarker()
+    return result
   }
 
   public mutating func clear(keepingParser parser: Tekkon.MandarinParser? = nil) {
@@ -253,6 +321,8 @@ public struct MixedInputSegmentStream: Sendable {
     } else {
       activeRawBuffer.clear()
     }
+    streamCursor = 0
+    streamMarker = 0
   }
 
   public mutating func rebuildActiveRawBuffer() {
@@ -412,5 +482,181 @@ public struct MixedInputSegmentStream: Sendable {
     } else {
       segments[segments.count - 1] = .raw(text)
     }
+  }
+
+  // MARK: - Cursor / Marker management
+
+  /// 把游標與 marker 都吸到 stream 的尾端。所有「新輸入」入口都會呼叫之，
+  /// 與 assembler 在 mixed 接管時一直把 cursor 推到尾端的舊行為一致。
+  public mutating func snapCursorToEnd() {
+    streamCursor = streamUnitCount
+    streamMarker = streamCursor
+  }
+
+  /// 確保 cursor / marker 都在 [0, streamUnitCount] 範圍內。
+  public mutating func clampCursorAndMarker() {
+    let upper = streamUnitCount
+    streamCursor = min(max(streamCursor, 0), upper)
+    streamMarker = min(max(streamMarker, 0), upper)
+  }
+
+  /// 把指定的 stream-unit 位置換算成「該位置之前累計的 chinese reading 數」，
+  /// 用以同步 `assembler.cursor`——assembler 只看 chinese readings，
+  /// 候選窗 anchor / 上下候選 / Enter commit 等都據此定位。
+  public func chineseReadingPrefixCount(forStreamCursor cursor: Int) -> Int {
+    var remaining = max(cursor, 0)
+    var count = 0
+    for segment in segments {
+      switch segment {
+      case let .chinese(_, readings):
+        let length = readings.count
+        if remaining <= length {
+          return count + remaining
+        }
+        count += length
+        remaining -= length
+      case let .raw(text):
+        let length = text.count
+        if remaining <= length { return count }
+        remaining -= length
+      }
+    }
+    return count
+  }
+
+  /// 把 streamCursor 設為指定值（會自動 clamp），並同步重置 streamMarker。
+  public mutating func setStreamCursor(_ position: Int) {
+    streamCursor = min(max(position, 0), streamUnitCount)
+    streamMarker = streamCursor
+  }
+
+  /// 步進游標：方向鍵每次按下移動一個 stream-unit。回傳是否真的動了。
+  @discardableResult
+  public mutating func moveStreamCursorBackward(isMarker: Bool = false) -> Bool {
+    if isMarker {
+      guard streamMarker > 0 else { return false }
+      streamMarker -= 1
+      return true
+    }
+    guard streamCursor > 0 else { return false }
+    streamCursor -= 1
+    streamMarker = streamCursor
+    return true
+  }
+
+  @discardableResult
+  public mutating func moveStreamCursorForward(isMarker: Bool = false) -> Bool {
+    let upper = streamUnitCount
+    if isMarker {
+      guard streamMarker < upper else { return false }
+      streamMarker += 1
+      return true
+    }
+    guard streamCursor < upper else { return false }
+    streamCursor += 1
+    streamMarker = streamCursor
+    return true
+  }
+
+  @discardableResult
+  public mutating func moveStreamCursorToHome(isMarker: Bool = false) -> Bool {
+    if isMarker {
+      guard streamMarker != 0 else { return false }
+      streamMarker = 0
+      return true
+    }
+    guard streamCursor != 0 else { return false }
+    streamCursor = 0
+    streamMarker = 0
+    return true
+  }
+
+  @discardableResult
+  public mutating func moveStreamCursorToEnd(isMarker: Bool = false) -> Bool {
+    let upper = streamUnitCount
+    if isMarker {
+      guard streamMarker != upper else { return false }
+      streamMarker = upper
+      return true
+    }
+    guard streamCursor != upper else { return false }
+    streamCursor = upper
+    streamMarker = upper
+    return true
+  }
+
+  /// 跨 segment 跳：往前 (toFront=true) 找到下一個 segment 邊界、或往後找上一個。
+  /// 若已位於該方向的端點則回傳 false。
+  @discardableResult
+  public mutating func jumpStreamCursorBySegment(
+    toFront: Bool, isMarker: Bool = false
+  ) -> Bool {
+    let boundaries = segmentBoundaries
+    let current = isMarker ? streamMarker : streamCursor
+    let target: Int? = toFront
+      ? boundaries.first { $0 > current }
+      : boundaries.reversed().first { $0 < current }
+    guard let target else { return false }
+    if isMarker {
+      streamMarker = target
+    } else {
+      streamCursor = target
+      streamMarker = target
+    }
+    return true
+  }
+
+  /// 所有 segment 邊界（含 0 與 streamUnitCount）。
+  private var segmentBoundaries: [Int] {
+    var result: [Int] = [0]
+    var acc = 0
+    for segment in segments {
+      switch segment {
+      case let .chinese(_, readings): acc += readings.count
+      case let .raw(text): acc += text.count
+      }
+      result.append(acc)
+    }
+    return result
+  }
+
+  /// 將給定的 stream-unit 區間擷取為「每個單位對應的 token」陣列：
+  /// chinese 單位回傳對應 reading、raw 單位回傳對應 char 本身。
+  /// 主要供 marking range 顯示 / 使用者語彙操作的最佳近似使用。
+  public func tokensForStreamRange(_ range: Range<Int>) -> [String] {
+    guard !range.isEmpty else { return [] }
+    var tokens: [String] = []
+    var unitBase = 0
+    for segment in segments {
+      switch segment {
+      case let .chinese(_, readings):
+        let segLength = readings.count
+        let segRange = unitBase ..< unitBase + segLength
+        if let overlap = clampedOverlap(range, segRange) {
+          for i in overlap {
+            tokens.append(readings[i - unitBase])
+          }
+        }
+        unitBase += segLength
+      case let .raw(text):
+        let segLength = text.count
+        let segRange = unitBase ..< unitBase + segLength
+        if let overlap = clampedOverlap(range, segRange) {
+          let chars = Array(text)
+          for i in overlap {
+            tokens.append(String(chars[i - unitBase]))
+          }
+        }
+        unitBase += segLength
+      }
+    }
+    return tokens
+  }
+
+  private func clampedOverlap(_ a: Range<Int>, _ b: Range<Int>) -> Range<Int>? {
+    let lower = max(a.lowerBound, b.lowerBound)
+    let upper = min(a.upperBound, b.upperBound)
+    guard lower < upper else { return nil }
+    return lower ..< upper
   }
 }

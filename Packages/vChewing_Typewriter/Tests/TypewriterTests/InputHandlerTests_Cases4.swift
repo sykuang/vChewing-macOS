@@ -1372,14 +1372,15 @@ extension InputHandlerTests {
     #expect(testSession.state.displayedText == "你test你")
     #expect(testHandler.assembler.cursor == 2)
 
+    // Stream-unit dispatch: bare Left moves streamCursor by 1 unit (a char inside raw, or
+    // a reading inside a Chinese segment). From the end of "你test你" (streamCursor=6),
+    // one Left lands inside the trailing "t" boundary (displayCursor=5).
     #expect(testHandler.triageInput(event: KBEvent.KeyEventData.dataArrowLeft.asEvent))
     #expect(testSession.state.type == .ofInputting)
-    #expect(testHandler.assembler.cursor == 1)
-    #expect(testSession.state.cursor == 1)
+    #expect(testSession.state.cursor == 5)
 
     #expect(testHandler.triageInput(event: KBEvent.KeyEventData.dataArrowRight.asEvent))
     #expect(testSession.state.type == .ofInputting)
-    #expect(testHandler.assembler.cursor == 2)
     #expect(testSession.state.cursor == "你test你".count)
 
     #expect(testHandler.triageInput(event: KBEvent.KeyEventData.dataArrowDown.asEvent))
@@ -1943,6 +1944,7 @@ extension InputHandlerTests {
     typeSentence("su3cl3testsu3")
     #expect(testHandler.committableDisplayText(sansReading: true) == "你好test你")
 
+    testHandler.mixedInputSegmentStream.setStreamCursor(2)
     testHandler.assembler.cursor = 2
     testSession.switchState(testHandler.generateStateOfInputting())
     #expect(testSession.state.cursor == 2)
