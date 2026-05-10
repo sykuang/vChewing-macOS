@@ -144,33 +144,47 @@ struct MixedInputRawBufferTests {
     )))
   }
 
+  /// 共用 helper：把整段 raw 文字以增量方式餵給 incremental buffer，
+  /// 取尾端的 terminal commit。等價於原本已被移除的全掃靜態 API
+  /// `longestTonedSuffix(in:parser:)`，但走的是 production 路徑。
+  private func incrementalTerminalCommit(
+    in rawBuffer: String,
+    parser: Tekkon.MandarinParser
+  ) -> MixedInputRawBuffer.Commit? {
+    var buffer = MixedInputRawBuffer(parser: parser)
+    for key in rawBuffer.map(\.description) {
+      _ = buffer.receive(key)
+    }
+    return buffer.currentTerminalCommit
+  }
+
   @Test func findsTonedSuffixForStandaloneZhuyin() {
-    let match = MixedInputRawBuffer.longestTonedSuffix(in: "su3", parser: .ofDachen)
+    let match = incrementalTerminalCommit(in: "su3", parser: .ofDachen)
     #expect(match == .init(suffix: "su3", phonabet: "ㄋㄧˇ"))
   }
 
   @Test func findsLongestTonedSuffixAtEndOfRawAsciiPrefix() {
-    let match = MixedInputRawBuffer.longestTonedSuffix(in: "testsu3", parser: .ofDachen)
+    let match = incrementalTerminalCommit(in: "testsu3", parser: .ofDachen)
     #expect(match == .init(suffix: "su3", phonabet: "ㄋㄧˇ"))
   }
 
   @Test func doesNotTreatUntonedSuffixAsZhuyinMatch() {
-    let match = MixedInputRawBuffer.longestTonedSuffix(in: "testsu", parser: .ofDachen)
+    let match = incrementalTerminalCommit(in: "testsu", parser: .ofDachen)
     #expect(match == nil)
   }
 
   @Test func doesNotTreatPlainEnglishAsTonedZhuyin() {
-    let match = MixedInputRawBuffer.longestTonedSuffix(in: "test", parser: .ofDachen)
+    let match = incrementalTerminalCommit(in: "test", parser: .ofDachen)
     #expect(match == nil)
   }
 
   @Test func matchesXieWithCorrectTone() {
-    let match = MixedInputRawBuffer.longestTonedSuffix(in: "vu,4", parser: .ofDachen)
+    let match = incrementalTerminalCommit(in: "vu,4", parser: .ofDachen)
     #expect(match == .init(suffix: "vu,4", phonabet: "ㄒㄧㄝˋ"))
   }
 
   @Test func dictionaryDerivedSuffixMatcherDoesNotTreatStandaloneO4AsMatch() {
-    let match = MixedInputRawBuffer.longestTonedSuffix(in: "o4", parser: .ofDachen)
+    let match = incrementalTerminalCommit(in: "o4", parser: .ofDachen)
     #expect(match == nil, "Suffix matcher follows dictionary-derived trie; live composer still handles o4 as ㄟˋ")
   }
 

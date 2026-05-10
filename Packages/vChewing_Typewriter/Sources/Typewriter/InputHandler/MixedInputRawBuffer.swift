@@ -31,16 +31,6 @@ public struct MixedInputRawBuffer: Sendable {
     }
   }
 
-  public struct Match: Equatable, Sendable {
-    public let suffix: String
-    public let phonabet: String
-
-    public init(suffix: String, phonabet: String) {
-      self.suffix = suffix
-      self.phonabet = phonabet
-    }
-  }
-
   public struct Commit: Equatable, Sendable {
     public let suffix: String
     public let phonabet: String
@@ -196,17 +186,6 @@ public struct MixedInputRawBuffer: Sendable {
     frames.removeAll()
   }
 
-  public static func terminalCommit(
-    in rawBuffer: String,
-    parser: Tekkon.MandarinParser
-  ) -> Commit? {
-    var buffer = MixedInputRawBuffer(parser: parser)
-    for key in rawBuffer.map(\.description) {
-      _ = buffer.receive(key)
-    }
-    return buffer.currentTerminalCommit
-  }
-
   private func normalizedKeys(from start: Int?) -> [String] {
     guard let start else { return [] }
     return frames.dropFirst(start).map(\.normalizedKey) + [String(rawBuffer.last!).lowercased()]
@@ -225,15 +204,6 @@ public struct MixedInputRawBuffer: Sendable {
       suffix: suffix,
       phonabet: phonabet
     )
-  }
-
-
-  public static func longestTonedSuffix(
-    in rawBuffer: String,
-    parser: Tekkon.MandarinParser
-  ) -> Match? {
-    guard let commit = terminalCommit(in: rawBuffer, parser: parser) else { return nil }
-    return .init(suffix: commit.suffix, phonabet: commit.phonabet)
   }
 
   private static func phonabetPreview(
