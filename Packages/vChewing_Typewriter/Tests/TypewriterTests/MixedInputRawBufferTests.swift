@@ -29,6 +29,35 @@ struct MixedInputRawBufferTests {
     #expect(EnglishWordLexicon.completedASCIIToken(beforeTrailingBoundary: "hell") == nil)
   }
 
+  @Test func tokenSplitByTerminalSuffixDetectsMidWordSplit() {
+    // 典型陷阱：使用者打 `private` 後接大千 `j6`，Trie active suffix 變成
+    // `ej6 → ㄍㄨˊ`，會把 `private` 的 `e` 切走。helper 必須回傳
+    // 「被切開的完整 token」= "private"，讓 mixed dispatcher 拿去查字典 veto。
+    #expect(EnglishWordLexicon.tokenSplitByTerminalSuffix(rawText: "privatej6", suffix: "ej6") == "private")
+    // 與 `private` 同形，但 suffix 起點 `t` 之前是 `priva`（合英文 word
+    // 規則但不是字典詞），helper 仍應回傳「被切開的 token」字串本身，
+    // 由 caller 決定是否查字典。
+    #expect(EnglishWordLexicon.tokenSplitByTerminalSuffix(rawText: "privatj6", suffix: "tj6") == "privat")
+    // suffix 起點之前不是 ASCII word char → 不算切開英文字。
+    #expect(EnglishWordLexicon.tokenSplitByTerminalSuffix(rawText: "j6", suffix: "j6") == nil)
+    #expect(EnglishWordLexicon.tokenSplitByTerminalSuffix(rawText: "Y5.6", suffix: "5.6") == nil)
+    // suffix 首字元非 ASCII word char。
+    #expect(EnglishWordLexicon.tokenSplitByTerminalSuffix(rawText: "hello 3", suffix: " 3") == nil)
+    // 被切開的 token 不到 3 char → 視為雜訊不擋。
+    #expect(EnglishWordLexicon.tokenSplitByTerminalSuffix(rawText: "abj6", suffix: "bj6") == nil)
+    // suffix 與 rawText 末尾不符 → 守門條件。
+    #expect(EnglishWordLexicon.tokenSplitByTerminalSuffix(rawText: "hello", suffix: "world") == nil)
+  }
+
+  @Test func bundledLexiconVetoesPrivateBeingSplitByZhuyinTerminal() {
+    // 端到端：`privatej6` 的 active suffix `ej6` 切開字典詞 `private` →
+    // `tokenSplitByTerminalSuffix` 回 "private"、`containsExactToken` 命中 →
+    // mixed dispatcher 收到 veto。
+    let token = EnglishWordLexicon.tokenSplitByTerminalSuffix(rawText: "privatej6", suffix: "ej6")
+    #expect(token == "private")
+    #expect(EnglishWordLexicon.bundled.containsExactToken(token ?? ""))
+  }
+
   @Test func bundledEnglishLexiconContainsWooormDictionaryWords() {
     #expect(EnglishWordLexicon.bundled.count > 40_000)
     #expect(EnglishWordLexicon.bundled.containsExactToken("hell"))
@@ -142,6 +171,34 @@ struct MixedInputRawBufferTests {
       suffix: "5.6",
       phonabet: "ㄓㄡˊ"
     )))
+  }
+
+  @Test func dictionaryOracleForcesDeadRestartWhenTrieWouldSplitEnglishWord() {
+    // 沒裝 oracle 時：`private` + `j6` 走純 Trie，會把 `e` 跟 `j6` 黏成
+    // `ej6 → ㄍㄨˊ`，整段 active suffix 變成漢字、把 `private` 切開。
+    var noOracle = MixedInputRawBuffer(parser: .ofDachen)
+    for k in "privatej6".map(\.description) { _ = noOracle.receive(k) }
+    #expect(noOracle.currentTerminalCommit == .init(suffix: "ej6", phonabet: "ㄍㄨˊ"))
+
+    // 裝 oracle 後：oracle 在收 `j` 時偵測到 active suffix `ej` 切開
+    // 字典詞 `private` → 強制把當前鍵 dead-restart，active suffix 變
+    // `j` 自己；後續 `6` 進來才形成 `j6 → ㄨˊ`，`private` 完整保留。
+    var withOracle = MixedInputRawBuffer(parser: .ofDachen)
+    withOracle.dictionaryWordSplitOracle = { rawText, suffixStart in
+      EnglishWordLexicon.tokenSplitByTerminalSuffix(
+        rawText: rawText,
+        suffixStart: suffixStart
+      ).map(EnglishWordLexicon.bundled.containsExactToken) ?? false
+    }
+    for k in "private".map(\.description) { _ = withOracle.receive(k) }
+    let jTransition = withOracle.receiveWithTransition("j")
+    #expect(jTransition == .restartedFromCurrentKey(commit: nil))
+    #expect(withOracle.activeTriePrefix?.suffix == "j")
+    #expect(withOracle.receiveWithTransition("6") == .continued(commit: .init(
+      suffix: "j6",
+      phonabet: "ㄨˊ"
+    )))
+    #expect(withOracle.rawBuffer == "privatej6")
   }
 
   /// 共用 helper：把整段 raw 文字以增量方式餵給 incremental buffer，

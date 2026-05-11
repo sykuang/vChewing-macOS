@@ -342,6 +342,43 @@ extension InputHandlerTests {
     #expect(testHandler.committableDisplayText(sansReading: true) == "x了")
   }
 
+  /// IH438: 字典 oracle 端到端──`private` 在大千 + `j6` 後應變成
+  /// `private` (raw) + `無` (ㄨˊ)，而非被 Trie 把尾巴 `e` 跟 `j6` 黏成
+  /// `ej6 → ㄍㄨˊ` 切開英文字。負面對照：`xyz`（非字典詞）+ `j6`
+  /// 仍維持純 Trie 行為，不被 oracle 干涉。
+  @Test
+  func test_IH438_MixedDictionaryOracleProtectsEnglishWordFromTrieSplit() throws {
+    let (testHandler, testSession) = try prepareMixedModeHandler()
+    let testKanjiData = """
+    ㄨˊ 無 -1
+    ㄍㄨˊ 縠 -1
+    """
+    let cleanup = injectTemporaryGrams(testHandler, testKanjiData)
+    defer { cleanup(); testHandler.clear() }
+
+    // Positive：`private` 在字典裡 → oracle 攔截，j6 自己跑。
+    typeSentence("privatej6")
+    #expect(testSession.recentCommissions.isEmpty)
+    #expect(testHandler.mixedInputSegmentStream.segments == [
+      .raw("private"),
+      .chinese(text: "無", readings: ["ㄨˊ"]),
+    ])
+    #expect(testHandler.committableDisplayText(sansReading: true) == "private無")
+
+    testHandler.clear()
+
+    // Negative：`xyz` 不在字典 → oracle 不該干涉。本端到端在這個輸入上
+    // mixed dispatch 不會把 `j6` commit 為漢字（其他 dispatch 條件決定，
+    // 與本 oracle 無關）；重點是 `xyz` 不被誤切、整段 raw 完好——證明
+    // oracle 沒在非字典詞上多管閒事。
+    typeSentence("xyzj6")
+    #expect(testSession.recentCommissions.isEmpty)
+    #expect(testHandler.mixedInputSegmentStream.segments == [
+      .raw("xyzj6"),
+    ])
+    #expect(testHandler.committableDisplayText(sansReading: true) == "xyzj6")
+  }
+
   /// 英文 prefix 後已有中文節點時，active Trie tail 只應出現在 tooltip；
   /// 藍色 inline 不得再把 composer reading 疊進來形成 `ek整ㄍㄜ` 這類混合怪。
   @Test

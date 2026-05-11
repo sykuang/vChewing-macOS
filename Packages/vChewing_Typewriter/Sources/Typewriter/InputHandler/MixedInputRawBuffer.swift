@@ -100,6 +100,17 @@ public struct MixedInputRawBuffer: Sendable {
   private let parser: Tekkon.MandarinParser
   private var frames: [Frame] = []
 
+  /// Dictionary oracle 注入點：每次 advance 出新 frame 後，
+  /// 若 oracle 對「(rawBuffer, activeSuffixStart)」回 true，
+  /// 表示 active suffix 起點切開了已成形英文字 → 強制走
+  /// dead-restart-from-current-key 路徑，把當前鍵之前的 raw 留給英文。
+  ///
+  /// 條件：oracle 不是 RawBuffer 自己的職責——它只持有判斷結果。
+  /// 預設 nil 時為純 Trie 行為，與舊版完全相容。
+  /// 注：closure 故意不標 `@Sendable`，因 caller 通常需要 access
+  /// `EnglishWordLexicon.bundled` 等 main-actor isolated 資源。
+  public var dictionaryWordSplitOracle: ((_ rawBuffer: String, _ suffixStart: Int) -> Bool)?
+
   public init(parser: Tekkon.MandarinParser) {
     self.parser = parser
   }
@@ -122,10 +133,10 @@ public struct MixedInputRawBuffer: Sendable {
     let advanced = trie.advance(from: previousCursor, with: normalizedKey)
     var didRestartFromCurrentKey = previous?.activeCursor == nil && previous != nil
 
-    let activeCursor: ZhuyinKeyTrie.Cursor?
-    let activeSuffixStart: Int?
-    let state: ZhuyinKeyTrie.AdvanceResult
-    let activePhonabet: String
+    var activeCursor: ZhuyinKeyTrie.Cursor?
+    var activeSuffixStart: Int?
+    var state: ZhuyinKeyTrie.AdvanceResult
+    var activePhonabet: String
 
     if let cursor = advanced.cursor {
       activeCursor = cursor
@@ -146,6 +157,28 @@ public struct MixedInputRawBuffer: Sendable {
         activeSuffixStart = nil
         state = .dead
         activePhonabet = ""
+      }
+    }
+
+    // Dictionary-oracle gate：若 active suffix 起點切開英文字，視同 Trie dead，
+    // 自當前鍵 root-restart。等同把該英文字「seal 給 raw 英文」、新鍵自己跑。
+    if let oracle = dictionaryWordSplitOracle,
+       let suffixStart = activeSuffixStart,
+       suffixStart < rawBuffer.count - 1, // 切開英文字的條件就是 suffix 不只有當前鍵
+       oracle(rawBuffer, suffixStart) {
+      let restarted = trie.advance(from: trie.rootCursor, with: normalizedKey)
+      if let restartedCursor = restarted.cursor {
+        didRestartFromCurrentKey = true
+        activeCursor = restartedCursor
+        activeSuffixStart = rawBuffer.count - 1
+        state = restarted.state
+        activePhonabet = Self.phonabetPreview(for: [normalizedKey], parser: parser) ?? ""
+      } else {
+        activeCursor = nil
+        activeSuffixStart = nil
+        state = .dead
+        activePhonabet = ""
+        didRestartFromCurrentKey = false
       }
     }
 

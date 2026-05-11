@@ -38,6 +38,44 @@ public struct EnglishWordLexicon: Sendable {
     return words.contains(normalized)
   }
 
+  /// 給定 `rawText` 與 `suffixStart`（active suffix 在 rawText 中的字元起點 offset），
+  /// 若該 offset 落在已存在的 ASCII word run 內，回傳「會被切開的完整 token」
+  /// （prefix run + suffixStart 該 char 自身），供 caller 查字典 veto。
+  ///
+  /// 條件：
+  /// - `suffixStart` 落在 `[1, rawText.count - 1]`（首字元無前綴可切開）。
+  /// - `suffixStart` 與其前一字元皆為 ASCII word char（letters/digits/'-'/'\''）。
+  /// - 結果 token ≥ 3 char、normalize 後合法。
+  ///
+  /// 例：`rawText="privatej6"`, `suffixStart=6`（`e` 的位置）→ "private"。
+  public static func tokenSplitByTerminalSuffix(
+    rawText: String,
+    suffixStart: Int
+  ) -> String? {
+    let chars = Array(rawText)
+    guard suffixStart >= 1, suffixStart < chars.count else { return nil }
+    guard chars[suffixStart].isASCIIWordToken else { return nil }
+    guard chars[suffixStart - 1].isASCIIWordToken else { return nil }
+    var tokenStart = suffixStart
+    while tokenStart > 0, chars[tokenStart - 1].isASCIIWordToken {
+      tokenStart -= 1
+    }
+    let token = String(chars[tokenStart ... suffixStart])
+    guard token.count >= 3, normalizedToken(token) != nil else { return nil }
+    return token
+  }
+
+  /// 上一版的便利包裝：用 `suffix` 字串推算 `suffixStart` 後委派給上方主 API。
+  /// 保留給「拿到完整 commit」場景的 caller。
+  public static func tokenSplitByTerminalSuffix(
+    rawText: String,
+    suffix: String
+  ) -> String? {
+    guard !suffix.isEmpty, rawText.hasSuffix(suffix) else { return nil }
+    let suffixStart = rawText.count - suffix.count
+    return tokenSplitByTerminalSuffix(rawText: rawText, suffixStart: suffixStart)
+  }
+
   public static func completedASCIIToken(beforeTrailingBoundary rawText: String) -> String? {
     guard rawText.last?.isASCIIWordBoundary == true else { return nil }
     let tokenEnd = rawText.index(before: rawText.endIndex)

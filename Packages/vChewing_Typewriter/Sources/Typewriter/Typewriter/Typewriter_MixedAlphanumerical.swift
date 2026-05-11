@@ -28,6 +28,18 @@ public struct MixedAlphanumericalTypewriter<Handler: InputHandlerProtocol>: Type
     guard !handler.composer.isPinyinMode else {
       return BPMFFullMatchTypewriter(handler).handle(input)
     }
+    // 確保字典 oracle 已就位：當 active raw 起點切到字典詞中間時，
+    // RawBuffer 會強制把當前鍵 dead-restart，避免 Trie 把英文字尾巴
+    // 與新鍵黏成漢字（例如 `private` + `j6` 不再被吞成 `ej6→ㄍㄨˊ`）。
+    if handler.mixedInputSegmentStream.dictionaryWordSplitOracle == nil {
+      handler.mixedInputSegmentStream.dictionaryWordSplitOracle = { rawText, suffixStart in
+        guard let token = EnglishWordLexicon.tokenSplitByTerminalSuffix(
+          rawText: rawText,
+          suffixStart: suffixStart
+        ) else { return false }
+        return EnglishWordLexicon.bundled.containsExactToken(token)
+      }
+    }
     // 波浪符號鍵（symbol menu physical key）應交還上層分診流程處理。
     // mixed mode 若此時已有可提交內容，先提交全部內容，再放行按鍵事件。
     if input.isSymbolMenuPhysicalKey {
@@ -255,10 +267,12 @@ public struct MixedAlphanumericalTypewriter<Handler: InputHandlerProtocol>: Type
   }
 
   private func shouldVetoTerminalCommitForCompletedEnglishToken(rawText: String) -> Bool {
-    guard let completedToken = EnglishWordLexicon.completedASCIIToken(beforeTrailingBoundary: rawText) else {
-      return false
+    // (1) 已含 trailing word boundary（空格）後的 completed token：原條件保留。
+    if let completedToken = EnglishWordLexicon.completedASCIIToken(beforeTrailingBoundary: rawText),
+       EnglishWordLexicon.bundled.containsExactToken(completedToken) {
+      return true
     }
-    return EnglishWordLexicon.bundled.containsExactToken(completedToken)
+    return false
   }
 
   /// 判定 terminal commit 的最佳候選字是否就是 phonabet 自己（例如 reading=`ㄅ` 且

@@ -57,6 +57,13 @@ public struct MixedInputSegmentStream: Sendable {
   /// 進入 marking 後才從游標延伸。
   public var streamMarker: Int = 0
 
+  /// Dictionary oracle：dispatcher 注入的字典查詢結果，會 propagate 到
+  /// `activeRawBuffer` 與每次 rebuild 後的新 buffer。詳見
+  /// `MixedInputRawBuffer.dictionaryWordSplitOracle`。
+  public var dictionaryWordSplitOracle: ((_ rawBuffer: String, _ suffixStart: Int) -> Bool)? {
+    didSet { activeRawBuffer.dictionaryWordSplitOracle = dictionaryWordSplitOracle }
+  }
+
   public init(parser: Tekkon.MandarinParser = .ofDachen) {
     self.parser = parser
     self.activeRawBuffer = MixedInputRawBuffer(parser: parser)
@@ -321,12 +328,14 @@ public struct MixedInputSegmentStream: Sendable {
     } else {
       activeRawBuffer.clear()
     }
+    activeRawBuffer.dictionaryWordSplitOracle = dictionaryWordSplitOracle
     streamCursor = 0
     streamMarker = 0
   }
 
   public mutating func rebuildActiveRawBuffer() {
     activeRawBuffer = MixedInputRawBuffer(parser: parser)
+    activeRawBuffer.dictionaryWordSplitOracle = dictionaryWordSplitOracle
     for key in activeRawText.map(\.description) {
       _ = activeRawBuffer.receive(key)
     }
