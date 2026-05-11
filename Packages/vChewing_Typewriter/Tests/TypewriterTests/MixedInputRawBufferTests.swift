@@ -58,10 +58,22 @@ struct MixedInputRawBufferTests {
     #expect(EnglishWordLexicon.bundled.containsExactToken(token ?? ""))
   }
 
-  @Test func bundledEnglishLexiconContainsWooormDictionaryWords() {
+  @Test func bundledEnglishLexiconContainsWooormAndTechSupplemental() {
+    // wooorm（≈49K）+ tech-supplemental（~300）union 後仍應 >40K。
     #expect(EnglishWordLexicon.bundled.count > 40_000)
+    // wooorm base coverage：常見英文字。
     #expect(EnglishWordLexicon.bundled.containsExactToken("hell"))
     #expect(EnglishWordLexicon.bundled.containsExactToken("film"))
+    #expect(EnglishWordLexicon.bundled.containsExactToken("private"))
+    // tech-supplemental coverage：wooorm 沒有但 mixed-input 常踩到的縮寫。
+    #expect(EnglishWordLexicon.bundled.containsExactToken("npm"))
+    #expect(EnglishWordLexicon.bundled.containsExactToken("json"))
+    #expect(EnglishWordLexicon.bundled.containsExactToken("yaml"))
+    #expect(EnglishWordLexicon.bundled.containsExactToken("k8s"))
+    #expect(EnglishWordLexicon.bundled.containsExactToken("ssh"))
+    // 字尾變化形不在字典：避免 `hello + s` 後 oracle 誤殺注音。
+    #expect(!EnglishWordLexicon.bundled.containsExactToken("hellos"))
+    #expect(!EnglishWordLexicon.bundled.containsExactToken("tests"))
   }
 
   @Test func receiveDoesNotMutateRawBufferWhenTerminalSuffixValidates() {

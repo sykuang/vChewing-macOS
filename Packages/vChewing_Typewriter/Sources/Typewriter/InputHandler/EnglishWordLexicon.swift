@@ -109,18 +109,66 @@ public struct EnglishWordLexicon: Sendable {
   }
 
   private init(contentsOfBundledDictionary _: Void) {
-    guard let url = Self.bundledDictionaryURL(),
-          let text = try? String(contentsOf: url, encoding: .utf8)
-    else {
-      self.init(words: [])
-      return
+    var union = Set<String>()
+    union.reserveCapacity(60_000)
+    for source in Self.bundledDictionarySources {
+      guard let url = Self.bundledDictionaryURL(
+        subdirectory: source.subdirectory,
+        fileStem: source.fileStem
+      ),
+        let text = try? String(contentsOf: url, encoding: .utf8)
+      else { continue }
+      switch source.parser {
+      case .hunspell: union.formUnion(Self.parseHunspellDictionary(text))
+      case .plain: union.formUnion(Self.parsePlainWordlist(text))
+      }
     }
-    self.init(hunspellDictionaryText: text)
+    self.init(words: union)
   }
 
-  private static func bundledDictionaryURL() -> URL? {
+  /// Bundled dictionary sources: wooorm `index.dic`（Hunspell 格式，
+  /// ≈49K natural English stems）為基底；`tech-supplemental/tech.dic`
+  /// 補上 `npm` / `json` / `k8s` 等 wooorm 沒收的現代技術縮寫。
+  ///
+  /// 為什麼不用 SCOWL 60+hacker：實測它把 `hellos` / `tests` 這類字尾
+  /// 變化形也收進來，導致 oracle 在「打完 `hello` 接 `s` 想轉注音」時
+  /// 把 `s` 留給英文，使用體驗大幅變糟。wooorm 的 Hunspell stem 表
+  /// 把字尾變化交給 affix 規則處理、本身較精簡，誤殺面遠小。
+  ///
+  /// Filenames are intentionally distinct（`index.dic`、`tech.dic`）以
+  /// 避免 SwiftPM 拒收同名 resource。
+  private static var bundledDictionarySources: [(subdirectory: String, fileStem: String, parser: WordlistParserKind)] {
+    [
+      ("EnglishDictionaries/wooorm-dictionaries-en", "index", .hunspell),
+      ("EnglishDictionaries/tech-supplemental", "tech", .plain),
+    ]
+  }
+
+  /// Bundled wordlist 的 parser 種類。
+  /// - `.hunspell`: stems followed by `/AFFIX` codes (wooorm `index.dic`)。
+  /// - `.plain`: one bare token per line, `#`-prefixed comments allowed
+  ///   (tech-supplemental)。
+  private enum WordlistParserKind: Sendable {
+    case hunspell, plain
+  }
+
+  /// 解析 plain wordlist：每行一個 token，`#` 起頭與含空白的行皆略過——
+  /// 讓使用者手動編輯的 supplemental 檔可以放註解、分區標題。
+  public static func parsePlainWordlist(_ text: String) -> Set<String> {
+    var parsed = Set<String>()
+    parsed.reserveCapacity(2_000)
+    text.enumerateLines { line, _ in
+      let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else { return }
+      guard !trimmed.contains(" ") else { return }
+      guard let normalized = normalizedToken(trimmed) else { return }
+      parsed.insert(normalized)
+    }
+    return parsed
+  }
+
+  private static func bundledDictionaryURL(subdirectory: String, fileStem: String) -> URL? {
     let bundleName = "Typewriter_Typewriter"
-    let resourcePath = "EnglishDictionaries/wooorm-dictionaries-en"
     let finderBundle = Bundle(for: TypewriterBundleFinder.self)
     let candidates: [URL?] = [
       // Installed .app: SwiftPM resource bundles are copied to Contents/Resources/.
@@ -135,8 +183,8 @@ public struct EnglishWordLexicon: Sendable {
     for candidate in candidates {
       guard let bundleURL = candidate?.appendingPathComponent(bundleName + ".bundle"),
             let bundle = Bundle(url: bundleURL) else { continue }
-      if let url = bundle.url(forResource: "index", withExtension: "dic")
-        ?? bundle.url(forResource: "index", withExtension: "dic", subdirectory: resourcePath)
+      if let url = bundle.url(forResource: fileStem, withExtension: "dic")
+        ?? bundle.url(forResource: fileStem, withExtension: "dic", subdirectory: subdirectory)
       {
         return url
       }
