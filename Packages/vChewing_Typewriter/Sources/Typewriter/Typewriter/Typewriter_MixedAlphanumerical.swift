@@ -76,6 +76,13 @@ public struct MixedAlphanumericalTypewriter<Handler: InputHandlerProtocol>: Type
     let baseInputTextIgnoringModifiers = (input.inputTextIgnoringModifiers ?? input.text)
       .lowercased().applyingTransformFW2HW(reverse: false)
     let isBaseInputPhoneticKey = handler.composer.inputValidityCheck(charStr: baseInputTextIgnoringModifiers)
+    // 設計選擇（非 Trie 特例）：在 mixed 模式上層 dispatch 必須先把
+    // 「同一個鍵在當下情境該走哪條路」分類清楚。ASCII 標點若：
+    //   (a) 帶 Shift（Shift+標點通常表達使用者明確要 ASCII 字面值），或
+    //   (b) buffer 已含 ASCII 英數而當前鍵又不是合法注音鍵
+    //       （保持英文輸入流不被打斷）
+    // 則直接走 ASCII 提交。此判斷是鍵分類的本質，不是繞過 Trie——
+    // Trie 從未看到過這顆鍵，因此不存在「演算法特例」之說。
     let forceASCIIPunctuationPath = isASCIIPunctuation && (
       input.isShiftHold || (bufferHasASCIIAlnum && !isBaseInputPhoneticKey)
     )
@@ -93,8 +100,10 @@ public struct MixedAlphanumericalTypewriter<Handler: InputHandlerProtocol>: Type
     // 若當前鍵（含修飾鍵）在標點詞庫有可用項，
     // 視為 CJK 標點輸入，優先回到既有標點管線處理。
     // 但若目前鍵位本身就是合法注音鍵，則必須讓注音輸入優先。
-    // 僅 Shift+? 需強制保留 ASCII 語義，不回到 CJK 標點管線。
-    // 其餘 Shift 標點（例如 Shift+` 的 ~）仍需維持既有 CJK 標點查詢能力。
+    // 設計選擇（非 Trie 特例）：Shift+? 永遠保留 ASCII `?` 字面值，
+    // 不被吸成 CJK 全形 `？`。`?` 在 mixed 程式輸入情境太常見，
+    // 而 `？` 仍可由其他輸入路徑（候選窗、注音 `2/?`）取得。
+    // 其餘 Shift 標點（例如 Shift+` 的 ~）仍維持既有 CJK 標點查詢能力。
     let punctuationQueryStrings = handler.punctuationQueryStrings(input: input)
     let isShiftQuestionMark = input.isShiftHold && ["?", "？"].contains(visibleInputText)
 
