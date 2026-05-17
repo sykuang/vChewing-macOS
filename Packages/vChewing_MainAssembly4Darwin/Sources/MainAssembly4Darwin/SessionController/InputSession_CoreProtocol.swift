@@ -63,6 +63,18 @@ public protocol SessionProtocol: AnyObject, IMKInputSessionControllerProtocol, C
   var buzzer: (() -> ())? { get set }
   /// 上次實際套用至 client 的鍵盤佈局名稱，用以跳過重複的 overrideKeyboard() 呼叫。
   var lastAppliedKeyboardLayout: String? { get set }
+  /// 上次 `activateServer()` 完成的時間戳（since 1970），供 `setValue(_:forTag:client:)`
+  /// 偵測 IMK 緊跟著 server activation 自動 push stale mode 的場景。
+  var lastActivateServerTimestamp: TimeInterval { get set }
+  /// `activateServer()` 結束時 arm 一發；`setValue(_:forTag:client:)` 第一次進來
+  /// 消費掉即 disarm。配合 timestamp 形成「一次性 + 短時窗」雙保險，
+  /// 避免將使用者主動的 mode switch 誤判成 stale push。
+  var pendingPostActivateSetValueGuard: Bool { get set }
+  /// `activateServer()` 進入時當下的 `inputMode` 快照。供 `setValue` 偵測
+  /// IMK 在 activateServer 後自動 replay「進入時就已是的那個 mode」。
+  /// 只把這個明確的 replay 當 stale；其它 incoming（含使用者透過 IMK 系統
+  /// 清單做出的切換）一律當真實意圖接受，避免任何第二層 policy heuristic。
+  var lastActivateServerInputMode: Shared.InputMode { get set }
 
   func initInputHandler()
 }
@@ -164,29 +176,43 @@ extension SessionProtocol {
     defer { isASCIIMode = false }
     let nowMode = IMEApp.currentInputMode
     guard nowMode != .imeModeNULL else { return }
-    modeCheck: for neta in TISInputSource.allRegisteredInstancesOfThisInputMethod {
-      guard !neta.isActivated else { continue }
-      osCheck: if #unavailable(macOS 12) {
+    let targetMode = nowMode.reversed
+    // macOS 11 以下：若目標 sub-mode 在 TIS 中存在但未 activate，仍須先 activate
+    // 才能讓系統認得。macOS 12+ 上 `selectMode(_:)` 即使 sub-mode 被系統清單藏掉
+    // 仍可切換 IMK 內部 mode（IMECHS 常被 Phase 2 隱藏，舊版那段「跳 alert 後
+    // return」的 guard 會讓使用者永遠切不過去）。所以這裡直接 fall-through。
+    if #unavailable(macOS 12) {
+      for neta in TISInputSource.allRegisteredInstancesOfThisInputMethod
+        where neta.identifier == targetMode.rawValue && !neta.isActivated {
         neta.activate()
-        if !neta.isActivated {
-          break osCheck
+        guard neta.isActivated else {
+          // 舊版 macOS 上若 TISInputSource activate 失敗，沿用舊 UX：
+          // 提示使用者前往「系統偏好設定 → 鍵盤 → 輸入來源」啟用對應 sub-mode，
+          // 然後 early-return（不執行 selectMode）以避免 IMK 進入半啟用狀態。
+          let result = sharedAlertForInputModeToggling.runModal()
+          NSApp.popup()
+          if result == NSApplication.ModalResponse.alertFirstButtonReturn {
+            neta.activate()
+          }
+          return
         }
-        break modeCheck
+        break
       }
-      let result = sharedAlertForInputModeToggling.runModal()
-      NSApp.popup()
-      if result == NSApplication.ModalResponse.alertFirstButtonReturn {
-        neta.activate()
-      }
-      return
     }
     let status = "NotificationSwitchRevolver".i18n
     asyncOnMain(bypassAsync: UserDefaults.pendingUnitTests) {
       Notifier.notify(
-        message: nowMode.reversed.localizedDescription + "\n" + status
+        message: targetMode.localizedDescription + "\n" + status
       )
     }
-    client.selectMode(nowMode.reversed.rawValue)
+    client.selectMode(targetMode.rawValue)
+    prefs.mostRecentInputMode = targetMode.rawValue
+    if targetMode == .imeModeCHS || targetMode == .imeModeCHT {
+      let newPickerValue = (targetMode == .imeModeCHS) ? 1 : 0
+      if prefs.primaryOutputScript != newPickerValue {
+        prefs.primaryOutputScript = newPickerValue
+      }
+    }
   }
 
   /// Applies the unified output-script preference by switching the IMK sub-mode.
@@ -309,6 +335,7 @@ extension SessionProtocol {
       state = .ofEmpty()
       applyPrimaryOutputScript()
       setKeyLayout()
+      armPostActivateGuard()
       return
     }
 
@@ -382,11 +409,23 @@ extension SessionProtocol {
     this.state = .ofEmpty()
     this.isActivated = true // 登記啟用狀態。
     this.setKeyLayout()
+    this.armPostActivateGuard()
 
     if !UserDefaults.pendingUnitTests {
       asyncOnMain {
         AppDelegate.shared.checkMemoryUsage()
       }
     }
+  }
+
+  /// Arm 一發 post-activate stale-push guard：
+  /// - 記下進入時刻供短時窗判斷。
+  /// - 一次性 flag，被 setValue() 第一發消費掉即 disarm。
+  /// - 快照當下的 inputMode，供 setValue() 判定 IMK 是否在 replay
+  ///   「activateServer 進入時就已是的那個 mode」。
+  public func armPostActivateGuard() {
+    lastActivateServerTimestamp = Date().timeIntervalSince1970
+    pendingPostActivateSetValueGuard = true
+    lastActivateServerInputMode = inputMode
   }
 }

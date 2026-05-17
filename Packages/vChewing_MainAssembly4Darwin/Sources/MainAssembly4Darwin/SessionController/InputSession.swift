@@ -106,6 +106,20 @@ public final class InputSession: @MainActor SessionProtocol, Sendable {
   /// 上次實際套用至 client 的鍵盤佈局名稱，用以跳過重複的 overrideKeyboard() 呼叫。
   public var lastAppliedKeyboardLayout: String?
 
+  /// `activateServer()` 結束時記錄的時間戳。`setValue(_:forTag:client:)` 會用此判斷
+  /// 緊跟在 server activation 之後的 IMK 自動 push 是不是 stale —— 若 incoming mode
+  /// 與 picker pref (`primaryOutputScript`) 不符，視為 IMK 在 Space / 焦點切換時把
+  /// 上一個 client 的舊 mode 強加進來，需要 reconcile 回 picker。
+  public var lastActivateServerTimestamp: TimeInterval = 0
+  /// 一次性 flag — `activateServer()` 結尾 arm，`setValue(_:forTag:client:)` 消費後 disarm。
+  public var pendingPostActivateSetValueGuard: Bool = false
+  /// `activateServer()` 進入時的 inputMode 快照。setValue() 用以判定 IMK 是否
+  /// 在 replay「進入時就已是的那個 mode」（屬於 IMK 自動行為，應忽略）。
+  public var lastActivateServerInputMode: Shared.InputMode = .imeModeNULL
+  /// 接受 IMK 自動 push 的時間窗（秒）。activateServer() 之後此時段內收到的 setValue
+  /// 若與 picker pref 不符會被視為 stale。
+  public static let postActivateStaleWindow: TimeInterval = 0.3
+
   /// IMKInputController 副本。
   public weak var inputControllerAssigned: SessionCtl?
 
@@ -240,11 +254,38 @@ extension InputSession {
     if isCurrentSession {
       hidePalettes()
     }
-    let newMode: Shared.InputMode = .init(
-      rawValue: value as? String ?? prefs.mostRecentInputMode
-    ) ?? .imeModeNULL
-    if inputMode != newMode {
-      inputMode = newMode
+    let incomingRaw = value as? String ?? prefs.mostRecentInputMode
+    let incomingMode: Shared.InputMode = .init(rawValue: incomingRaw) ?? .imeModeNULL
+    let withinPostActivateWindow =
+      Date().timeIntervalSince1970 - lastActivateServerTimestamp
+        < Self.postActivateStaleWindow
+    // 一次性消費（語意保留供未來擴充；目前 stale 判定不再依賴）。
+    pendingPostActivateSetValueGuard = false
+
+    // activateServer 之後的短時窗（postActivateStaleWindow）內，IMK 對該 client
+    // 發出的 setValue push **全部**不可信任——包括它對我們剛剛 selectMode() 的
+    // echo、以及它擅自 push「該 client 上次用過的 mode」。一律強制 reconcile
+    // 回 prefs.primaryOutputScript（picker 真值）。
+    // 只有窗外的 setValue 才被視為使用者意圖（IMK menu / 系統清單切換）。
+    let isStalePush = withinPostActivateWindow && incomingMode != .imeModeNULL
+
+    if isStalePush {
+      // 先同步 in-memory inputMode 反映 IMK 當前狀態，這樣 applyPrimaryOutputScript()
+      // 內部 guard (currentMode == target) 能正確判斷是否需要 selectMode，
+      // 避免我們自己呼叫 selectMode 後又被 echo 進來造成迴圈。
+      if inputMode != incomingMode {
+        inputMode = incomingMode
+      }
+      // 若 incoming 已等於 target，applyPrimaryOutputScript 內部 guard 會 no-op。
+      applyPrimaryOutputScript()
+      return
+    }
+
+    // 窗外 setValue 視為使用者意圖。接受 inputMode 更新，但**不**改寫
+    // prefs.primaryOutputScript ─ pref 只在使用者明確操作（toggleInputMode、
+    // Settings picker）時才被改寫，避免 IMK 的 per-client mode push 污染全域 pref。
+    if inputMode != incomingMode {
+      inputMode = incomingMode
     }
   }
 
