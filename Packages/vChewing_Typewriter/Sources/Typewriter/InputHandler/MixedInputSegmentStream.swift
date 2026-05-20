@@ -50,6 +50,12 @@ public struct MixedInputSegmentStream: Sendable {
   public private(set) var activeRawBuffer: MixedInputRawBuffer
   public let parser: Tekkon.MandarinParser
 
+  /// A3-style 新不變量：指向「目前正在累積 zhuyin/raw 輸入」的 raw segment
+  /// 的索引。`nil` 表示沒有 active raw 段（例如游標不在任何 raw 段尾、或者
+  /// stream 全為 chinese 段、或剛清空）。取代了舊「segments.last 即是 active
+  /// raw」的隱含假設。
+  public private(set) var activeSegmentIndex: Int?
+
   /// Stream 自管的「游標」，以 stream-unit 為單位（chinese 段每個 reading=1
   /// 單位、raw 段每個 char=1 單位）。Stream 接管時這是視覺游標的唯一真相來源。
   public private(set) var streamCursor: Int = 0
@@ -80,7 +86,8 @@ public struct MixedInputSegmentStream: Sendable {
   }
 
   public var activeRawText: String {
-    guard case let .raw(text)? = segments.last else { return "" }
+    guard let idx = activeSegmentIndex, segments.indices.contains(idx),
+          case let .raw(text) = segments[idx] else { return "" }
     return text
   }
 
@@ -206,11 +213,11 @@ public struct MixedInputSegmentStream: Sendable {
   }
 
   public mutating func appendRawKey(_ key: String) -> MixedInputRawBuffer.Commit? {
-    if case .raw = segments.last {
-      // Continue the tail raw segment.
-    } else {
-      segments.append(.raw(""))
-      activeRawBuffer.clear()
+    // 判定：游標是否「正坐在現有 active raw 段的尾端」？若是則沿用、繼續累積。
+    // 否則 → A3 路徑：在 cursor 切點建立新的 raw segment、buffer dead-restart。
+    let tailOfActive = isCursorAtActiveSegmentTail()
+    if !tailOfActive {
+      openNewActiveRawSegmentAtCursor()
     }
     let transition = activeRawBuffer.receiveWithTransition(key)
     let result: MixedInputRawBuffer.Commit?
@@ -225,21 +232,33 @@ public struct MixedInputSegmentStream: Sendable {
       replaceActiveRawText(with: activeRawBuffer.rawBuffer)
       result = nil
     }
-    snapCursorToEnd()
+    // 游標推進到 active segment 的尾端（不是 stream 尾端）。
+    advanceCursorToActiveSegmentTail()
     return result
   }
 
   public mutating func replaceActiveRawWithChinese(
     _ replacement: ChineseReplacement
   ) {
-    guard case let .raw(rawText) = segments.last else { return }
+    guard let idx = activeSegmentIndex, segments.indices.contains(idx),
+          case let .raw(rawText) = segments[idx] else { return }
     guard rawText.hasSuffix(replacement.rawText) else { return }
-    _ = segments.popLast()
     let untouchedRawPrefix = String(rawText.dropLast(replacement.rawText.count))
-    appendRaw(untouchedRawPrefix)
-    appendChinese(text: replacement.chineseText, readings: replacement.readings)
+    // 把 active raw 段替換為：untouchedRawPrefix(可空) + chinese 段。
+    var insertions: [Segment] = []
+    if !untouchedRawPrefix.isEmpty {
+      insertions.append(.raw(untouchedRawPrefix))
+    }
+    insertions.append(.chinese(text: replacement.chineseText, readings: replacement.readings))
+    let unitsBeforeActive = streamUnitCountBeforeSegment(index: idx)
+    segments.replaceSubrange(idx ... idx, with: insertions)
     activeRawBuffer.clear()
-    snapCursorToEnd()
+    activeSegmentIndex = nil
+    // 合併相鄰同類段（chinese-chinese / raw-raw）。
+    mergeAdjacentSameTypeSegments()
+    // 游標停在剛插入的 chinese 段右側。
+    let newCursor = unitsBeforeActive + untouchedRawPrefix.count + replacement.readings.count
+    setStreamCursor(newCursor)
   }
 
   public func chineseReplacement(
@@ -270,6 +289,10 @@ public struct MixedInputSegmentStream: Sendable {
     } else {
       segments.append(.chinese(text: text, readings: readings))
     }
+    activeSegmentIndex = nil
+    // 注意：不清掉 activeRawBuffer。Trie state 仍代表使用者剛輸入完
+    // 的那串 phonabet（tooltip 顯示用）；下一次 appendRawKey 會走
+    // openNewActiveRawSegmentAtCursor 路徑自動 dead-restart。
     snapCursorToEnd()
   }
 
@@ -280,7 +303,82 @@ public struct MixedInputSegmentStream: Sendable {
     } else {
       segments.append(.raw(text))
     }
+    activeSegmentIndex = segments.count - 1
+    rebuildActiveRawBuffer()
     snapCursorToEnd()
+  }
+
+  /// Cursor-aware backspace。以 `streamCursor` 為座標反查所在 segment 與段內
+  /// offset，刪除 cursor 前一個 stream-unit（raw=1 char、chinese=1 reading）。
+  /// 不依賴外部傳入的 reading cursor，避免座標系錯位（之前的 bug：caller 把
+  /// assembler.cursor 當 readingCursor 傳入，但 stream 座標 = readings + raw
+  /// chars，導致中段 backspace 刪錯位置）。
+  @discardableResult
+  public mutating func backspaceAtStreamCursor() -> BackspaceDeletion? {
+    guard streamCursor > 0 else { return nil }
+    var base = 0
+    var globalReadingBase = 0
+    for segmentIndex in segments.indices {
+      let segLen: Int
+      switch segments[segmentIndex] {
+      case let .chinese(_, readings): segLen = readings.count
+      case let .raw(text): segLen = text.count
+      }
+      let upper = base + segLen
+      if streamCursor <= upper {
+        let offsetInSegment = streamCursor - base
+        guard offsetInSegment > 0 else { return nil }
+        let result: BackspaceDeletion?
+        switch segments[segmentIndex] {
+        case let .raw(text):
+          let chars = Array(text)
+          let removeAt = offsetInSegment - 1
+          guard chars.indices.contains(removeAt) else { return nil }
+          let removed = chars[removeAt].description
+          var newChars = chars
+          newChars.remove(at: removeAt)
+          if newChars.isEmpty {
+            segments.remove(at: segmentIndex)
+            if let active = activeSegmentIndex {
+              if active == segmentIndex { activeSegmentIndex = nil }
+              else if active > segmentIndex { activeSegmentIndex = active - 1 }
+            }
+          } else {
+            segments[segmentIndex] = .raw(String(newChars))
+          }
+          streamCursor -= 1
+          streamMarker = streamCursor
+          rebuildActiveRawBuffer()
+          result = .rawCharacter(removed)
+        case .chinese:
+          let readingIndex = offsetInSegment - 1
+          let globalReadingIndex = globalReadingBase + readingIndex
+          let segCountBefore = segments.count
+          result = removeChineseReading(
+            inSegmentAt: segmentIndex,
+            readingIndex: readingIndex,
+            globalReadingIndex: globalReadingIndex
+          )
+          // 中文段刪 1 reading = 刪 1 個 displayUnit = stream cursor 後退 1。
+          streamCursor -= 1
+          streamMarker = streamCursor
+          // 若該 segment 被整段移除，activeSegmentIndex 也要修正。
+          if segments.count < segCountBefore, let active = activeSegmentIndex {
+            if active == segmentIndex { activeSegmentIndex = nil }
+            else if active > segmentIndex { activeSegmentIndex = active - 1 }
+          }
+        }
+        mergeAdjacentSameTypeSegments()
+        clampCursorAndMarker()
+        return result
+      }
+      switch segments[segmentIndex] {
+      case let .chinese(_, readings): globalReadingBase += readings.count
+      case .raw: break
+      }
+      base = upper
+    }
+    return nil
   }
 
   @discardableResult
@@ -288,35 +386,44 @@ public struct MixedInputSegmentStream: Sendable {
     let result: BackspaceDeletion?
     if let readingCursor, let deletion = removeChineseReading(before: readingCursor) {
       result = deletion
-    } else if let last = segments.last {
-      switch last {
-      case let .raw(text):
-        if let removedCharacter = text.last {
-          var newText = text
-          newText.removeLast()
-          if newText.isEmpty {
-            _ = segments.popLast()
-          } else {
-            segments[segments.count - 1] = .raw(newText)
-          }
-          rebuildActiveRawBuffer()
-          result = .rawCharacter(removedCharacter.description)
-        } else {
-          result = nil
-        }
-      case let .chinese(_, readings):
-        if !readings.isEmpty {
-          result = removeChineseReading(
-            inSegmentAt: segments.count - 1,
-            readingIndex: max(readings.count - 1, 0)
-          )
-        } else {
-          result = nil
-        }
-      }
     } else {
-      result = nil
+      // 優先處理 active raw 段（可能不是 segments.last，因為插中段後位置在中間）。
+      let targetIndex: Int? = activeSegmentIndex ?? (segments.indices.last)
+      if let idx = targetIndex, segments.indices.contains(idx) {
+        switch segments[idx] {
+        case let .raw(text):
+          if let removedCharacter = text.last {
+            var newText = text
+            newText.removeLast()
+            // 游標若坐落於該段尾後，後退一格。
+            let segTailUnit = streamUnitCountBeforeSegment(index: idx) + text.count
+            if streamCursor == segTailUnit { streamCursor -= 1; streamMarker = streamCursor }
+            if newText.isEmpty {
+              segments.remove(at: idx)
+              if activeSegmentIndex == idx { activeSegmentIndex = nil }
+            } else {
+              segments[idx] = .raw(newText)
+            }
+            rebuildActiveRawBuffer()
+            result = .rawCharacter(removedCharacter.description)
+          } else {
+            result = nil
+          }
+        case let .chinese(_, readings):
+          if !readings.isEmpty {
+            result = removeChineseReading(
+              inSegmentAt: idx,
+              readingIndex: max(readings.count - 1, 0)
+            )
+          } else {
+            result = nil
+          }
+        }
+      } else {
+        result = nil
+      }
     }
+    mergeAdjacentSameTypeSegments()
     clampCursorAndMarker()
     return result
   }
@@ -329,6 +436,7 @@ public struct MixedInputSegmentStream: Sendable {
       activeRawBuffer.clear()
     }
     activeRawBuffer.dictionaryWordSplitOracle = dictionaryWordSplitOracle
+    activeSegmentIndex = nil
     streamCursor = 0
     streamMarker = 0
   }
@@ -485,12 +593,196 @@ public struct MixedInputSegmentStream: Sendable {
   }
 
   private mutating func replaceActiveRawText(with text: String) {
-    guard case .raw = segments.last else { return }
+    guard let idx = activeSegmentIndex, segments.indices.contains(idx),
+          case .raw = segments[idx] else { return }
     if text.isEmpty {
-      _ = segments.popLast()
+      segments.remove(at: idx)
+      activeSegmentIndex = nil
     } else {
-      segments[segments.count - 1] = .raw(text)
+      segments[idx] = .raw(text)
     }
+  }
+
+  // MARK: - A3 helpers
+
+  /// 計算「指定 segment 之前」累積的 stream-unit 數量。
+  private func streamUnitCountBeforeSegment(index: Int) -> Int {
+    var acc = 0
+    for i in 0 ..< min(index, segments.count) {
+      switch segments[i] {
+      case let .chinese(_, readings): acc += readings.count
+      case let .raw(text): acc += text.count
+      }
+    }
+    return acc
+  }
+
+  /// 判定游標是否正好坐在 active raw segment 的尾端。
+  private func isCursorAtActiveSegmentTail() -> Bool {
+    guard let idx = activeSegmentIndex, segments.indices.contains(idx),
+          case let .raw(text) = segments[idx] else { return false }
+    let tail = streamUnitCountBeforeSegment(index: idx) + text.count
+    return streamCursor == tail
+  }
+
+  /// 把 streamCursor 推到目前 active segment 的尾端。
+  private mutating func advanceCursorToActiveSegmentTail() {
+    guard let idx = activeSegmentIndex, segments.indices.contains(idx) else {
+      snapCursorToEnd(); return
+    }
+    let segLen: Int = {
+      switch segments[idx] {
+      case let .chinese(_, r): return r.count
+      case let .raw(t): return t.count
+      }
+    }()
+    streamCursor = streamUnitCountBeforeSegment(index: idx) + segLen
+    streamMarker = streamCursor
+  }
+
+  /// 在當前游標位置開新的 active raw segment。
+  /// - 若游標位於 chinese 段內部 → split 該段。
+  /// - 若游標位於 raw 段內部/邊界 → freeze 原段，插入新空 raw 段。
+  /// - activeRawBuffer 直接 dead-restart（clear）。
+  private mutating func openNewActiveRawSegmentAtCursor() {
+    activeRawBuffer.clear()
+    let cursor = streamCursor
+    // 在 segments 中尋找命中段：累積 unit，若 cursor 落在 (base, base+len) 即段內，
+    // 落在 base 或 base+len 為邊界。
+    var base = 0
+    var insertAt = segments.count
+    for i in segments.indices {
+      let len: Int
+      switch segments[i] {
+      case let .chinese(_, r): len = r.count
+      case let .raw(t): len = t.count
+      }
+      let end = base + len
+      if cursor < base {
+        insertAt = i
+        break
+      } else if cursor == base {
+        insertAt = i
+        break
+      } else if cursor < end {
+        // 在段內 — 視段類型處理：
+        switch segments[i] {
+        case let .chinese(text, readings):
+          // Split chinese segment at cursor-base。
+          // 座標系說明：stream 中文段的 unit = readings.count（每個 reading
+          // 計 1 unit），與 text 字數可能不一致（例如多字單讀的標點：
+          // text=「……」readings=["..."] count=1）。因此 split 一律以
+          // readings.count 為準。
+          // 若 text 與 readings 字數不一致，無法安全地把 text 切兩半（會切錯字），
+          // 此時 REFUSE 切段：改為在該段「之後」插入新 active raw 段（視為邊界），
+          // 不破壞既有 chinese segment 結構。
+          let splitIdx = cursor - base
+          let textUnits = text.map(\.description)
+          guard textUnits.count == readings.count else {
+            insertAt = i + 1
+            // 跳出 for，由迴圈後段共同邏輯插入空 raw 段。
+            segments.insert(.raw(""), at: insertAt)
+            activeSegmentIndex = insertAt
+            return
+          }
+          let leftText = textUnits.prefix(splitIdx).joined()
+          let rightText = textUnits.dropFirst(splitIdx).joined()
+          let leftReadings = Array(readings.prefix(splitIdx))
+          let rightReadings = Array(readings.dropFirst(splitIdx))
+          var replacements: [Segment] = []
+          if !leftReadings.isEmpty {
+            replacements.append(.chinese(text: leftText, readings: leftReadings))
+          }
+          replacements.append(.raw(""))
+          let newActive = replacements.count - 1
+          if !rightReadings.isEmpty {
+            replacements.append(.chinese(text: rightText, readings: rightReadings))
+          }
+          segments.replaceSubrange(i ... i, with: replacements)
+          activeSegmentIndex = i + newActive
+          return
+        case let .raw(text):
+          // Split raw segment at cursor-base — freeze both sides.
+          let splitIdx = cursor - base
+          let chars = Array(text)
+          let leftStr = String(chars.prefix(splitIdx))
+          let rightStr = String(chars.dropFirst(splitIdx))
+          var replacements: [Segment] = []
+          if !leftStr.isEmpty {
+            replacements.append(.raw(leftStr))
+          }
+          replacements.append(.raw(""))
+          let newActive = replacements.count - 1
+          if !rightStr.isEmpty {
+            replacements.append(.raw(rightStr))
+          }
+          segments.replaceSubrange(i ... i, with: replacements)
+          activeSegmentIndex = i + newActive
+          return
+        }
+      } else if cursor == end {
+        // 在段邊界（右端）— 在此段之後插入新 raw 段。
+        insertAt = i + 1
+        break
+      }
+      base = end
+    }
+    // 未命中段（全 stream 之尾或空 stream）— 在 insertAt 處插入空 raw 段。
+    segments.insert(.raw(""), at: insertAt)
+    activeSegmentIndex = insertAt
+  }
+
+  /// 掃描 segments，將相鄰且同類型的段合併。
+  /// - chinese + chinese → 合併 text 與 readings。
+  /// - raw + raw → 合併 text。
+  /// 同時維護 activeSegmentIndex 不指向被消除的段。
+  private mutating func mergeAdjacentSameTypeSegments() {
+    guard segments.count >= 2 else { return }
+    var i = 0
+    while i < segments.count - 1 {
+      switch (segments[i], segments[i + 1]) {
+      case let (.chinese(t1, r1), .chinese(t2, r2)):
+        // 不要合併 active raw 兩側被切開的 chinese（active 段在中間時不會相鄰）
+        segments[i] = .chinese(text: t1 + t2, readings: r1 + r2)
+        segments.remove(at: i + 1)
+        if let a = activeSegmentIndex, a > i { activeSegmentIndex = a - 1 }
+      case let (.raw(t1), .raw(t2)):
+        // 若任一段是 active raw 段，不合併（保留 freeze 語意）。
+        if activeSegmentIndex == i || activeSegmentIndex == i + 1 {
+          i += 1; continue
+        }
+        segments[i] = .raw(t1 + t2)
+        segments.remove(at: i + 1)
+        if let a = activeSegmentIndex, a > i { activeSegmentIndex = a - 1 }
+      default:
+        i += 1
+      }
+    }
+  }
+
+  /// 依照當前 streamCursor 重新計算 activeSegmentIndex。
+  /// - 若 cursor 落在某 raw 段尾端 → 該段重新激活（rebuild activeRawBuffer）。
+  /// - 否則 → activeSegmentIndex = nil、activeRawBuffer 清空。
+  private mutating func refreshActiveSegmentFromCursor() {
+    let cursor = streamCursor
+    var base = 0
+    for i in segments.indices {
+      let len: Int
+      switch segments[i] {
+      case let .chinese(_, r): len = r.count
+      case let .raw(t): len = t.count
+      }
+      let end = base + len
+      if cursor == end, case .raw = segments[i] {
+        activeSegmentIndex = i
+        rebuildActiveRawBuffer()
+        return
+      }
+      if cursor < end { break }
+      base = end
+    }
+    activeSegmentIndex = nil
+    activeRawBuffer.clear()
   }
 
   // MARK: - Cursor / Marker management
@@ -537,6 +829,7 @@ public struct MixedInputSegmentStream: Sendable {
   public mutating func setStreamCursor(_ position: Int) {
     streamCursor = min(max(position, 0), streamUnitCount)
     streamMarker = streamCursor
+    refreshActiveSegmentFromCursor()
   }
 
   /// 步進游標：方向鍵每次按下移動一個 stream-unit。回傳是否真的動了。
@@ -550,6 +843,7 @@ public struct MixedInputSegmentStream: Sendable {
     guard streamCursor > 0 else { return false }
     streamCursor -= 1
     streamMarker = streamCursor
+    refreshActiveSegmentFromCursor()
     return true
   }
 
@@ -564,6 +858,7 @@ public struct MixedInputSegmentStream: Sendable {
     guard streamCursor < upper else { return false }
     streamCursor += 1
     streamMarker = streamCursor
+    refreshActiveSegmentFromCursor()
     return true
   }
 
@@ -577,6 +872,7 @@ public struct MixedInputSegmentStream: Sendable {
     guard streamCursor != 0 else { return false }
     streamCursor = 0
     streamMarker = 0
+    refreshActiveSegmentFromCursor()
     return true
   }
 
@@ -591,6 +887,7 @@ public struct MixedInputSegmentStream: Sendable {
     guard streamCursor != upper else { return false }
     streamCursor = upper
     streamMarker = upper
+    refreshActiveSegmentFromCursor()
     return true
   }
 

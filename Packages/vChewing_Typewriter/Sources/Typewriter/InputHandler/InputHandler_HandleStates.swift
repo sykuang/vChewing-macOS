@@ -663,12 +663,7 @@ extension InputHandlerProtocol {
 
     if currentTypingMethod == .vChewingFactory,
        !mixedInputSegmentStream.isEmpty {
-      let readingCursorSnapshot = assembler.cursor
-      let shouldPreferActiveRawTail = !mixedInputSegmentStream.activeRawText.isEmpty
-        && readingCursorSnapshot >= mixedInputSegmentStream.readingCount
-      let deletion = mixedInputSegmentStream.backspace(
-        readingCursor: shouldPreferActiveRawTail ? nil : readingCursorSnapshot
-      )
+      let deletion = mixedInputSegmentStream.backspaceAtStreamCursor()
       if case let .chineseReading(_, _, globalReadingIndex)? = deletion {
         assembler.cursor = min(globalReadingIndex + 1, assembler.length)
         _ = dropKey(direction: .rear)
