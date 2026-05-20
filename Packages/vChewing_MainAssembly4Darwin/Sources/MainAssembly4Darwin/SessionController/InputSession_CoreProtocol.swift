@@ -63,18 +63,6 @@ public protocol SessionProtocol: AnyObject, IMKInputSessionControllerProtocol, C
   var buzzer: (() -> ())? { get set }
   /// 上次實際套用至 client 的鍵盤佈局名稱，用以跳過重複的 overrideKeyboard() 呼叫。
   var lastAppliedKeyboardLayout: String? { get set }
-  /// 上次 `activateServer()` 完成的時間戳（since 1970），供 `setValue(_:forTag:client:)`
-  /// 偵測 IMK 緊跟著 server activation 自動 push stale mode 的場景。
-  var lastActivateServerTimestamp: TimeInterval { get set }
-  /// `activateServer()` 結束時 arm 一發；`setValue(_:forTag:client:)` 第一次進來
-  /// 消費掉即 disarm。配合 timestamp 形成「一次性 + 短時窗」雙保險，
-  /// 避免將使用者主動的 mode switch 誤判成 stale push。
-  var pendingPostActivateSetValueGuard: Bool { get set }
-  /// `activateServer()` 進入時當下的 `inputMode` 快照。供 `setValue` 偵測
-  /// IMK 在 activateServer 後自動 replay「進入時就已是的那個 mode」。
-  /// 只把這個明確的 replay 當 stale；其它 incoming（含使用者透過 IMK 系統
-  /// 清單做出的切換）一律當真實意圖接受，避免任何第二層 policy heuristic。
-  var lastActivateServerInputMode: Shared.InputMode { get set }
 
   func initInputHandler()
 }
@@ -335,7 +323,6 @@ extension SessionProtocol {
       state = .ofEmpty()
       applyPrimaryOutputScript()
       setKeyLayout()
-      armPostActivateGuard()
       return
     }
 
@@ -409,23 +396,11 @@ extension SessionProtocol {
     this.state = .ofEmpty()
     this.isActivated = true // 登記啟用狀態。
     this.setKeyLayout()
-    this.armPostActivateGuard()
 
     if !UserDefaults.pendingUnitTests {
       asyncOnMain {
         AppDelegate.shared.checkMemoryUsage()
       }
     }
-  }
-
-  /// Arm 一發 post-activate stale-push guard：
-  /// - 記下進入時刻供短時窗判斷。
-  /// - 一次性 flag，被 setValue() 第一發消費掉即 disarm。
-  /// - 快照當下的 inputMode，供 setValue() 判定 IMK 是否在 replay
-  ///   「activateServer 進入時就已是的那個 mode」。
-  public func armPostActivateGuard() {
-    lastActivateServerTimestamp = Date().timeIntervalSince1970
-    pendingPostActivateSetValueGuard = true
-    lastActivateServerInputMode = inputMode
   }
 }

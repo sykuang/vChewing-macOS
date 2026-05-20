@@ -382,50 +382,28 @@ extension MainAssemblyTests {
     #expect(chs["tsInputModeIsVisibleKey"] as? Bool == false)
   }
 
-  /// 回歸：跨 client 切換時，IMK 對新 client 自動 push「該 client 上次用過的 mode」
-  /// 不可污染全域 `prefs.primaryOutputScript`。
+  /// Invariant: `setValue(_:forTag:client:)` 是 IMK 單向通知 mode 變化的入口，
+  /// **永遠**不可信任為使用者意圖——它在三種情境下會被 IMK 呼叫，沒一種代表
+  /// 使用者意圖：
+  ///   (1) activateServer 後 IMK 對新 client push「該 client 上次用過的 mode」
+  ///       （per-client memory，IMK 的 client-specific 還原行為）。
+  ///   (2) 我們自己呼叫 `selectMode()` 後，IMK echo 回來。
+  ///   (3) 由於 IMECHS 是 hidden sub-mode（見 test508），使用者沒有合法的 IMK
+  ///       路徑可以切簡繁，所以「使用者透過 IMK menu 切 mode」這條 path 不存在。
   ///
-  /// 場景：使用者在 App A 切簡中（pps=1），切到 App B（IMK push CHT）。
-  /// 預期：pps 仍為 1；inputMode 接受 IMK 的 push（CHT）以反映 IMK 真實狀態；
-  /// 但 pref 不變，待 activateServer 再用 applyPrimaryOutputScript 校回。
+  /// 因此 setValue 一律：先同步 in-memory `inputMode` 反映 IMK 認知（讓
+  /// `applyPrimaryOutputScript` 內部 guard 能判斷是否需要 selectMode、避免
+  /// echo 迴圈），再 reconcile 回 `prefs.primaryOutputScript`（picker 真值）。
+  ///
+  /// 這個 test 同時護住兩個關鍵 invariant：
+  ///   - 跨 client 切換時 pref 不被污染（Discord ↔ RDP regression）。
+  ///   - reconcile 動作正確發出 `selectMode(target)`。
   @Test
-  func test509_SetValueDoesNotPollutePrimaryOutputScriptOnClientSwitch() throws {
+  func test509_SetValueAlwaysReconcilesToPickerPrefAndNeverWritesIt() throws {
     let client = testClient as IMKTextInput
     defer {
       PrefMgr.shared.primaryOutputScript = 0
       testSession.inputMode = .imeModeCHT
-      testSession.lastActivateServerTimestamp = 0
-      testSession.pendingPostActivateSetValueGuard = false
-    }
-
-    // 使用者意圖：簡中。
-    PrefMgr.shared.primaryOutputScript = 1
-    testSession.inputMode = .imeModeCHS
-    // 模擬已過 stale 窗（窗外 push 走「真實意圖」路徑）。
-    testSession.lastActivateServerTimestamp = 0
-    testSession.pendingPostActivateSetValueGuard = false
-
-    // IMK 在切到 App B 後 push CHT。
-    testSession.setValue(Shared.InputMode.imeModeCHT.rawValue, forTag: 0, client: client)
-
-    // inputMode 反映 IMK 當前狀態，但 pref 不被污染。
-    #expect(testSession.inputMode == .imeModeCHT)
-    #expect(PrefMgr.shared.primaryOutputScript == 1)
-  }
-
-  /// 回歸：activateServer 後的短時窗內，IMK 任何 setValue push（包括我們自己
-  /// `selectMode()` 的 echo、IMK 對新 client 的 per-client mode push）一律被視為
-  /// stale，強制 reconcile 回 `prefs.primaryOutputScript`（picker 真值）。
-  ///
-  /// 這是 Discord ↔ RDP 場景中「切回原 client 後簡中變回繁中」的 root cause 修正。
-  @Test
-  func test510_PostActivateSetValuePushReconcilesToPickerPref() throws {
-    let client = testClient as IMKTextInput
-    defer {
-      PrefMgr.shared.primaryOutputScript = 0
-      testSession.inputMode = .imeModeCHT
-      testSession.lastActivateServerTimestamp = 0
-      testSession.pendingPostActivateSetValueGuard = false
       testClient.selectedModeIdentifier = nil
     }
 
@@ -434,15 +412,11 @@ extension MainAssemblyTests {
     testSession.inputMode = .imeModeCHS
     testClient.selectedModeIdentifier = nil
 
-    // 模擬剛剛 activateServer，仍在 stale 窗內。
-    testSession.armPostActivateGuard()
-
-    // IMK 在窗內 push CHT（per-client mode replay）。
+    // IMK push CHT（不管是 per-client memory replay 還是 selectMode echo，
+    // 對 setValue 來說都是同一種 untrusted push）。
     testSession.setValue(Shared.InputMode.imeModeCHT.rawValue, forTag: 0, client: client)
 
-    // 應該被 reconcile 回 CHS：pref 不變、client 被重新 selectMode(CHS)。
-    // (inputMode 在真機上會由 IMK 對 selectMode 的 echo 更新；測試環境無 echo，
-    // 此處只驗 client 收到正確 selectMode 命令、pref 未被污染。)
+    // pref 不被污染、client 被命令切回 CHS（picker 真值）。
     #expect(PrefMgr.shared.primaryOutputScript == 1)
     #expect(testClient.selectedModeIdentifier == Shared.InputMode.imeModeCHS.rawValue)
   }
