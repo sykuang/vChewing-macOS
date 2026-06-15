@@ -3,6 +3,12 @@
 **/.index-build/
 !*.[Cc]ache/
 !.axoCover/settings.json
+
+# Local dev / agent / model artifacts (not part of the project source)
+.build-xcode/
+.hermes/
+DevLab/models/
+
 $RECYCLE.BIN/
 $tf/
 **/*.DesktopClient/GeneratedArtifacts
